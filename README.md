@@ -1,6 +1,6 @@
 # Claude for Zotero (v0.1.0 — DIY scaffold)
 
-A minimal Zotero 7 plugin that adds three things:
+A minimal Zotero plugin (tested on Zotero 9.0.6, 64-bit) that adds three things:
 
 1. **"Claude" button in the PDF reader toolbar** — opens a chat drawer
    seeded with the paper's title/abstract. Paste in excerpts you're
@@ -16,11 +16,32 @@ A minimal Zotero 7 plugin that adds three things:
 1. Get an API key at https://console.anthropic.com/settings/keys
    (this is separate from your claude.ai login — it's billed per use,
    typically a few dollars/month for reading-assistant-level usage).
-2. In Zotero: **Tools → Plugins** (or **Add-ons**) → gear icon →
-   **Install Plugin From File** → select `claude-reader.xpi`.
-3. Restart Zotero if prompted.
-4. **Tools → Set Claude API Key…** and paste your key.
-5. Open any PDF — you should see a "Claude" button in the toolbar.
+2. Build the plugin: `npm install` then `npm run build`. This produces
+   `.scaffold/build/claude-reader.xpi`.
+3. In Zotero: **Tools → Plugins** (or **Add-ons**) → gear icon →
+   **Install Plugin From File** → select that `claude-reader.xpi`.
+4. Restart Zotero if prompted.
+5. **Tools → Set Claude API Key…** and paste your key.
+6. Open any PDF — you should see a "Claude" button in the toolbar.
+
+## Development
+
+Plugin source lives in [addon/](addon/) (`manifest.json`, `bootstrap.js`,
+`content/`). This repo uses
+[zotero-plugin-scaffold](https://github.com/northword/zotero-plugin-scaffold)
+for a live-reload dev loop instead of manually rebuilding/reinstalling
+the xpi:
+
+1. Copy `.env.example` to `.env` and point it at your local Zotero
+   binary and profile directory.
+2. **Close Zotero** if it's already running (the dev server launches
+   its own instance against that profile).
+3. `npm install`, then `npm start`. This launches Zotero, installs the
+   plugin from source, and rebuilds + hot-reloads it into the running
+   instance whenever you save a file under `addon/`.
+
+`npm run build` alone (without `start`) just produces the xpi for
+manual installs, as in the Install section above.
 
 ## Known limitations (this is a v1 scaffold, not a polished plugin)
 

@@ -170,6 +170,22 @@ function buildDrawer(doc, opts) {
 
   closeBtn.addEventListener('click', () => drawer.remove());
 
+  // Chat bubbles live in the chrome document (not a <browser> content area),
+  // so Gecko has no cmd_copy controller wired up for their selection --
+  // Ctrl+C is silently swallowed. Copy the selection to the clipboard ourselves.
+  messagesEl.setAttribute('tabindex', '0');
+  messagesEl.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
+      let sel = doc.getSelection().toString();
+      if (sel) {
+        e.preventDefault();
+        Cc['@mozilla.org/widget/clipboardhelper;1']
+          .getService(Ci.nsIClipboardHelper)
+          .copyString(sel);
+      }
+    }
+  });
+
   function appendMsg(role, text) {
     let el = doc.createElement('div');
     el.className = 'cr-msg ' + role;

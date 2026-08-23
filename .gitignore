@@ -1,1 +1,5 @@
 *.xpi
+node_modules/
+.scaffold/
+build/
+.env
