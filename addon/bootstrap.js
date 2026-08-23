@@ -98,85 +98,250 @@ async function searchLibrary(query, limit = 6) {
   }).join('\n');
 }
 
-// ---------- Chat drawer UI (reused for both PDF-context and library chat) ----------
+// ---------- Chat history storage ----------
+// Persisted as a single JSON blob in prefs (bootstrap plugins have no
+// bundled DB access). Capped so the pref blob can't grow unbounded.
 
-function buildDrawer(doc, opts) {
-  let existing = doc.getElementById('claude-reader-drawer');
-  if (existing) {
-    existing.remove();
+const PREF_CHATS = 'extensions.claudereader.chats';
+const MAX_STORED_CHATS = 50;
+
+const ChatStore = {
+  _load() {
+    try {
+      let raw = Zotero.Prefs.get(PREF_CHATS, true);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      log('ChatStore load failed: ' + e.message);
+      return [];
+    }
+  },
+  _save(chats) {
+    chats.sort((a, b) => b.updatedAt - a.updatedAt);
+    if (chats.length > MAX_STORED_CHATS) chats.length = MAX_STORED_CHATS;
+    Zotero.Prefs.set(PREF_CHATS, JSON.stringify(chats), true);
+  },
+  list() {
+    return this._load().sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+  get(id) {
+    return this._load().find(c => c.id === id) || null;
+  },
+  upsert(chat) {
+    let chats = this._load();
+    let idx = chats.findIndex(c => c.id === chat.id);
+    if (idx >= 0) chats[idx] = chat;
+    else chats.push(chat);
+    this._save(chats);
+  },
+};
+
+function makeChatId() {
+  return 'chat-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+// ---------- Docked sidebar UI (reused for both PDF-context and library chat) ----------
+
+const PREF_SIDEBAR_WIDTH = 'extensions.claudereader.sidebarWidth';
+const DEFAULT_SIDEBAR_WIDTH = 340;
+const sidebarApis = new WeakMap(); // main window -> sidebar API, one per window
+
+function injectSidebarStyle(doc) {
+  if (doc.getElementById('claude-sidebar-style')) return;
+  let style = doc.createElement('style');
+  style.id = 'claude-sidebar-style';
+  style.textContent = `
+    #claude-sidebar-resizer {
+      position: fixed; top: 0; bottom: 0; width: 5px; cursor: col-resize;
+      background: transparent; z-index: 1000000; -moz-window-dragging: no-drag;
+    }
+    #claude-sidebar-resizer:hover { background: #bcd6f7; }
+    #claude-sidebar {
+      position: fixed; top: 0; right: 0; bottom: 0;
+      display: flex; flex-direction: column;
+      border-left: 1px solid #cdcdcd; background: #fff; color: #222;
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px;
+      min-width: 240px; max-width: 70vw; z-index: 999999;
+      -moz-window-dragging: no-drag;
+    }
+    #claude-sidebar.cr-hidden, #claude-sidebar-resizer.cr-hidden { display: none; }
+    #claude-sidebar .cr-header {
+      padding: 6px 8px; background: #f0f0f0; border-bottom: 1px solid #d5d5d5; color: #333;
+      display: flex; justify-content: space-between; align-items: center; gap: 6px;
+    }
+    #claude-sidebar .cr-title {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-weight: 600;
+    }
+    #claude-sidebar .cr-header-btns { display: flex; gap: 2px; flex-shrink: 0; }
+    #claude-sidebar .cr-header-btns [role="button"] {
+      cursor: pointer; font-size: 13px; padding: 3px 7px; border-radius: 4px; color: #444;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #claude-sidebar .cr-header-btns [role="button"]:hover { background: #e2e2e2; }
+    #claude-sidebar .cr-messages {
+      flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+    }
+    #claude-sidebar .cr-msg {
+      padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; line-height: 1.4;
+      user-select: text !important; -moz-user-select: text !important; cursor: text;
+    }
+    #claude-sidebar .cr-msg.user { background: #eef2f8; align-self: flex-end; max-width: 85%; }
+    #claude-sidebar .cr-msg.assistant { background: #f5f5f5; align-self: flex-start; max-width: 85%; }
+    #claude-sidebar .cr-input-row {
+      display: flex; border-top: 1px solid #d5d5d5; flex-shrink: 0; background: #fafafa;
+    }
+    #claude-sidebar textarea {
+      flex: 1; border: none; background: transparent; padding: 8px; resize: none; height: 44px;
+      font-family: inherit; font-size: 12.5px; color: #222;
+    }
+    #claude-sidebar textarea:focus { outline: none; }
+    #claude-sidebar .cr-send {
+      border: none; border-left: 1px solid #d5d5d5; background: transparent; color: #444;
+      padding: 0 14px; cursor: pointer; font-weight: 600;
+      flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    }
+    #claude-sidebar .cr-send:hover { background: #eee; }
+    #claude-sidebar .cr-history-list { flex: 1; overflow-y: auto; padding: 6px; }
+    #claude-sidebar .cr-history-item {
+      padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px;
+    }
+    #claude-sidebar .cr-history-item:hover { background: #f0f0f0; }
+    #claude-sidebar .cr-history-item .cr-hi-title {
+      font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #222;
+    }
+    #claude-sidebar .cr-history-item .cr-hi-meta { font-size: 11px; color: #888; }
+    #claude-sidebar .cr-history-empty { padding: 12px; color: #888; text-align: center; }
+  `;
+  (doc.head || doc.documentElement).appendChild(style);
+}
+
+// Zotero's tab strip / custom titlebar sits above the actual content area,
+// so the sidebar (and the margin pushing content over) needs to start below
+// it rather than at the very top of the window. The exact chrome structure
+// isn't verified against a running Zotero instance, so this tries several
+// plausible candidates and logs which one (if any) matched, rather than
+// hardcoding a guessed pixel value.
+function getContentTopOffset(doc) {
+  const candidates = [
+    '#tabs-toolbar', '.tabs-toolbar', '#zotero-tabs-toolbar',
+    '[role="tablist"]', '.tab-bar-container', '#titlebar',
+  ];
+  for (let sel of candidates) {
+    let el = doc.querySelector(sel);
+    if (el) {
+      let rect = el.getBoundingClientRect();
+      if (rect.height > 0) {
+        log('getContentTopOffset: matched "' + sel + '", bottom=' + rect.bottom);
+        return rect.bottom;
+      }
+    }
   }
+  log('getContentTopOffset: no candidate selector matched, defaulting to 0 ' +
+    '(sidebar will overlap the tab strip -- report this so the selector list can be fixed)');
+  return 0;
+}
 
-  let style = doc.getElementById('claude-reader-style');
-  if (!style) {
-    style = doc.createElement('style');
-    style.id = 'claude-reader-style';
-    style.textContent = `
-      #claude-reader-drawer {
-        position: fixed; right: 12px; bottom: 12px; width: 340px; height: 460px;
-        max-width: calc(100vw - 24px); max-height: calc(100vh - 24px);
-        background: #fff; border: 1px solid #ccc; border-radius: 8px;
-        box-shadow: 0 4px 16px rgba(0,0,0,0.25); z-index: 999999;
-        display: flex; flex-direction: column; font-family: sans-serif; font-size: 13px;
-      }
-      #claude-reader-drawer .cr-header {
-        padding: 8px 10px; background: #2d2d2d; color: #fff; border-radius: 8px 8px 0 0;
-        display: flex; justify-content: space-between; align-items: center;
-      }
-      #claude-reader-drawer .cr-messages {
-        flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px;
-      }
-      #claude-reader-drawer .cr-msg {
-        padding: 6px 8px; border-radius: 6px; white-space: pre-wrap;
-        user-select: text !important; -moz-user-select: text !important; cursor: text;
-      }
-      #claude-reader-drawer .cr-msg.user { background: #e8f0fe; align-self: flex-end; max-width: 85%; }
-      #claude-reader-drawer .cr-msg.assistant { background: #f1f1f1; align-self: flex-start; max-width: 85%; }
-      #claude-reader-drawer .cr-input-row { display: flex; border-top: 1px solid #ddd; }
-      #claude-reader-drawer textarea {
-        flex: 1; border: none; padding: 8px; resize: none; height: 44px; font-family: inherit; font-size: 13px;
-      }
-      #claude-reader-drawer .cr-send {
-        border: none; background: #2d2d2d; color: #fff; padding: 0 14px; cursor: pointer;
-        flex-shrink: 0; display: flex; align-items: center; justify-content: center;
-      }
-      #claude-reader-drawer .cr-close {
-        background: none; border: none; color: #fff; cursor: pointer; font-size: 14px;
-        display: flex; align-items: center; justify-content: center; padding: 2px 4px;
-      }
-    `;
-    (doc.head || doc.documentElement).appendChild(style);
+// Mounts (once per main window) a persistent docked sidebar and returns an
+// API for driving it. Idempotent -- safe to call from every entry point.
+function mountSidebar(win) {
+  if (sidebarApis.has(win)) {
+    log('mountSidebar: reusing existing sidebar for ' + win.location.href);
+    return sidebarApis.get(win);
   }
+  log('mountSidebar: creating new sidebar for ' + win.location.href);
 
-  let drawer = doc.createElement('div');
-  drawer.id = 'claude-reader-drawer';
-  drawer.innerHTML = `
+  let doc = win.document;
+  let preexisting = doc.querySelectorAll('#claude-sidebar').length;
+  if (preexisting > 0) {
+    log('mountSidebar: WARNING ' + preexisting + ' stale #claude-sidebar node(s) already in DOM');
+  }
+  injectSidebarStyle(doc);
+  // Appended directly to the document root -- NOT spliced into Zotero's own
+  // pane/tab DOM. An earlier version anchored inside #zotero-pane's parent,
+  // which broke Zotero's internal tab-switching bookkeeping (it throws from
+  // its own browser-custom-element code when extra sibling nodes show up
+  // there). A fixed-position panel over the document root avoids touching
+  // any container Zotero itself manages.
+  let anchor = doc.body || doc.documentElement;
+
+  let resizer = doc.createElement('div');
+  resizer.id = 'claude-sidebar-resizer';
+  resizer.className = 'cr-hidden';
+
+  let sidebar = doc.createElement('div');
+  sidebar.id = 'claude-sidebar';
+  sidebar.className = 'cr-hidden';
+  let savedWidth = parseInt(Zotero.Prefs.get(PREF_SIDEBAR_WIDTH, true), 10) || DEFAULT_SIDEBAR_WIDTH;
+  sidebar.style.width = savedWidth + 'px';
+  resizer.style.right = savedWidth + 'px';
+  sidebar.innerHTML = `
     <div class="cr-header">
-      <span>${opts.title}</span>
-      <div class="cr-close" tabindex="0" role="button">\u2715</div>
+      <span class="cr-title">Claude</span>
+      <div class="cr-header-btns">
+        <div class="cr-new" tabindex="0" role="button" title="New chat">+</div>
+        <div class="cr-history" tabindex="0" role="button" title="History">\u2630</div>
+        <div class="cr-close" tabindex="0" role="button" title="Hide sidebar">\u2715</div>
+      </div>
     </div>
     <div class="cr-messages"></div>
+    <div class="cr-history-list" style="display:none"></div>
     <div class="cr-input-row">
       <textarea placeholder="Ask Claude\u2026"></textarea>
       <div class="cr-send" tabindex="0" role="button">Send</div>
     </div>
   `;
-  (doc.body || doc.documentElement).appendChild(drawer);
 
-  let history = [];
-  let messagesEl = drawer.querySelector('.cr-messages');
-  let textarea = drawer.querySelector('textarea');
-  let sendBtn = drawer.querySelector('.cr-send');
-  let closeBtn = drawer.querySelector('.cr-close');
+  anchor.appendChild(resizer);
+  anchor.appendChild(sidebar);
 
-  closeBtn.addEventListener('click', () => drawer.remove());
+  let titleEl = sidebar.querySelector('.cr-title');
+  let messagesEl = sidebar.querySelector('.cr-messages');
+  let historyListEl = sidebar.querySelector('.cr-history-list');
+  let textarea = sidebar.querySelector('textarea');
+  let sendBtn = sidebar.querySelector('.cr-send');
+  let closeBtn = sidebar.querySelector('.cr-close');
+  let newBtn = sidebar.querySelector('.cr-new');
+  let historyBtn = sidebar.querySelector('.cr-history');
+  let inputRow = sidebar.querySelector('.cr-input-row');
+
+  let state = { chat: null, system: '', getExtraContext: null };
+
+  // Pushes the rest of Zotero's UI over by setting a margin on <body>,
+  // rather than reparenting/resizing Zotero's own elements directly (that's
+  // what broke tab-switching before -- see the anchor comment above). This
+  // only mutates a style property on an element we don't otherwise touch.
+  function applyContentPush() {
+    let width = parseInt(sidebar.style.width, 10) || DEFAULT_SIDEBAR_WIDTH;
+    doc.body.style.marginRight = width + 'px';
+  }
+  function clearContentPush() {
+    doc.body.style.marginRight = '';
+  }
+
+  function show() {
+    let top = getContentTopOffset(doc);
+    sidebar.style.top = top + 'px';
+    resizer.style.top = top + 'px';
+    sidebar.classList.remove('cr-hidden');
+    resizer.classList.remove('cr-hidden');
+    applyContentPush();
+  }
+  function hide() {
+    sidebar.classList.add('cr-hidden');
+    resizer.classList.add('cr-hidden');
+    clearContentPush();
+  }
+  function toggle() {
+    if (sidebar.classList.contains('cr-hidden')) show(); else hide();
+  }
 
   // Chat bubbles live in the chrome document (not a <browser> content area),
   // so Gecko has no cmd_copy controller wired up for their selection --
-  // Ctrl+C is silently swallowed. Copy the selection to the clipboard ourselves.
-  // Listen on the whole drawer (capture phase) rather than just .cr-messages,
-  // since a mouse-drag selection doesn't reliably move keyboard focus there.
+  // Ctrl+C is silently swallowed. Copy the selection to the clipboard
+  // ourselves. Listen on the whole sidebar (capture phase) rather than just
+  // .cr-messages, since a mouse-drag selection doesn't reliably move
+  // keyboard focus there.
   messagesEl.setAttribute('tabindex', '0');
-  drawer.addEventListener('keydown', (e) => {
+  sidebar.addEventListener('keydown', (e) => {
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
       let sel = doc.getSelection().toString();
       if (sel) {
@@ -188,6 +353,13 @@ function buildDrawer(doc, opts) {
     }
   }, true);
 
+  function renderMessages() {
+    messagesEl.innerHTML = '';
+    for (let m of state.chat.messages) {
+      appendMsg(m.role, m.content);
+    }
+  }
+
   function appendMsg(role, text) {
     let el = doc.createElement('div');
     el.className = 'cr-msg ' + role;
@@ -197,19 +369,118 @@ function buildDrawer(doc, opts) {
     return el;
   }
 
+  function persist() {
+    state.chat.updatedAt = Date.now();
+    ChatStore.upsert(state.chat);
+  }
+
+  function showChatView() {
+    messagesEl.style.display = '';
+    inputRow.style.display = '';
+    historyListEl.style.display = 'none';
+  }
+
+  // opts: { title, system, getExtraContext(query), seedText }
+  function startChat(opts) {
+    state.chat = {
+      id: makeChatId(),
+      title: opts.title || '',
+      contextLabel: opts.title || '',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
+    };
+    state.system = opts.system || '';
+    state.getExtraContext = opts.getExtraContext || null;
+    titleEl.textContent = opts.title || 'Claude';
+    showChatView();
+    renderMessages();
+    show();
+    if (opts.seedText) {
+      textarea.value = opts.seedText;
+    }
+    textarea.focus();
+  }
+
+  // Reopens a stored chat. Since the original system prompt/live context
+  // (e.g. a paper's full text) isn't persisted, continuation uses a generic
+  // system prompt grounded only in the saved contextLabel and prior messages.
+  function openSavedChat(id) {
+    let chat = ChatStore.get(id);
+    if (!chat) return;
+    state.chat = chat;
+    state.system = 'You are Claude, continuing a previous conversation' +
+      (chat.contextLabel ? ' about: ' + chat.contextLabel : '') +
+      '. Use the prior messages as context.';
+    state.getExtraContext = null;
+    titleEl.textContent = chat.title || 'Claude';
+    showChatView();
+    renderMessages();
+    show();
+  }
+
+  function showHistory() {
+    let chats = ChatStore.list();
+    historyListEl.innerHTML = '';
+    if (!chats.length) {
+      let empty = doc.createElement('div');
+      empty.className = 'cr-history-empty';
+      empty.textContent = 'No saved chats yet.';
+      historyListEl.appendChild(empty);
+    } else {
+      for (let chat of chats) {
+        let item = doc.createElement('div');
+        item.className = 'cr-history-item';
+        let titleDiv = doc.createElement('div');
+        titleDiv.className = 'cr-hi-title';
+        titleDiv.textContent = chat.title || '(untitled chat)';
+        let metaDiv = doc.createElement('div');
+        metaDiv.className = 'cr-hi-meta';
+        metaDiv.textContent = (chat.contextLabel ? chat.contextLabel + ' \u00b7 ' : '') +
+          new Date(chat.updatedAt).toLocaleString();
+        item.appendChild(titleDiv);
+        item.appendChild(metaDiv);
+        item.addEventListener('click', () => openSavedChat(chat.id));
+        historyListEl.appendChild(item);
+      }
+    }
+    messagesEl.style.display = 'none';
+    inputRow.style.display = 'none';
+    historyListEl.style.display = '';
+    titleEl.textContent = 'History';
+    show();
+  }
+
+  function startLibraryChat() {
+    startChat({
+      title: '',
+      system: 'You are a research assistant helping search and discuss a physics Zotero library. ' +
+        'Relevant items (title + abstract snippet) matching the user\'s question are provided as context when found. ' +
+        'If nothing relevant was found, say so rather than inventing papers.',
+      getExtraContext: async (query) => await searchLibrary(query),
+    });
+  }
+
   async function send(prefilled) {
+    if (!state.chat) return;
     let text = (prefilled !== undefined ? prefilled : textarea.value).trim();
     if (!text) return;
     textarea.value = '';
     appendMsg('user', text);
-    history.push({ role: 'user', content: text });
+    state.chat.messages.push({ role: 'user', content: text });
+    if (!state.chat.title) {
+      state.chat.title = text.length > 40 ? text.slice(0, 40) + '\u2026' : text;
+      titleEl.textContent = state.chat.title;
+    }
+    persist();
     let placeholder = appendMsg('assistant', '\u2026');
     try {
-      let extraContext = opts.getExtraContext ? await opts.getExtraContext(text) : '';
-      let system = opts.system + (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
-      let reply = await callClaude(history, system);
+      let extraContext = state.getExtraContext ? await state.getExtraContext(text) : '';
+      let system = state.system + (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
+      let reply = await callClaude(state.chat.messages, system);
       placeholder.textContent = reply;
-      history.push({ role: 'assistant', content: reply });
+      state.chat.messages.push({ role: 'assistant', content: reply });
+      persist();
     } catch (e) {
       placeholder.textContent = 'Error: ' + e.message;
     }
@@ -222,13 +493,33 @@ function buildDrawer(doc, opts) {
       send();
     }
   });
+  closeBtn.addEventListener('click', () => hide());
+  newBtn.addEventListener('click', () => startLibraryChat());
+  historyBtn.addEventListener('click', () => showHistory());
 
-  if (opts.seedText) {
-    textarea.value = opts.seedText;
-    textarea.focus();
-  }
+  // Drag-resize (both elements are position:fixed against the viewport, not
+  // laid out via flex, so width and the resizer's offset are both set directly).
+  let dragging = false;
+  resizer.addEventListener('mousedown', (e) => {
+    dragging = true;
+    e.preventDefault();
+  });
+  doc.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    let newWidth = Math.max(240, Math.min(win.innerWidth * 0.7, win.innerWidth - e.clientX));
+    sidebar.style.width = newWidth + 'px';
+    resizer.style.right = newWidth + 'px';
+    if (!sidebar.classList.contains('cr-hidden')) applyContentPush();
+  });
+  doc.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = false;
+    Zotero.Prefs.set(PREF_SIDEBAR_WIDTH, parseInt(sidebar.style.width, 10), true);
+  });
 
-  return drawer;
+  let api = { show, hide, toggle, startChat, startLibraryChat, openSavedChat, showHistory };
+  sidebarApis.set(win, api);
+  return api;
 }
 
 // ---------- Reader hooks ----------
@@ -243,7 +534,7 @@ async function onReaderToolbar(event) {
   btn.className = 'claude-reader-toolbar-btn';
   btn.textContent = 'Claude';
   btn.title = 'Chat with Claude about this paper';
-  btn.style.cssText = 'margin-left:6px;padding:2px 10px;border-radius:4px;border:1px solid #999;background:#fff;cursor:pointer;';
+  btn.style.cssText = 'margin-left:6px;padding:2px 10px;border-radius:4px;border:1px solid #999;background:#fff;cursor:pointer;-moz-window-dragging:no-drag;';
   btn.addEventListener('click', async () => {
     btn.disabled = true;
     let originalLabel = btn.textContent;
@@ -266,8 +557,9 @@ async function onReaderToolbar(event) {
           `Full text could not be extracted (the PDF may not be indexed yet \u2014 try again in a moment, ` +
           `or Zotero > right-click item > "Reindex Item"). They may paste excerpts manually in the meantime.`;
 
-      buildDrawer(getMainDoc(), { title: 'Claude \u2014 ' + title, system });
-      log('drawer opened for: ' + title);
+      let win = Zotero.getMainWindow ? Zotero.getMainWindow() : Zotero.getMainWindows()[0];
+      mountSidebar(win).startChat({ title: 'Claude \u2014 ' + title, system });
+      log('sidebar opened for: ' + title);
       btn.textContent = originalLabel;
     } catch (e) {
       log('Toolbar button click failed: ' + e + ' / ' + (e && e.stack));
@@ -285,7 +577,7 @@ function onSelectionPopup(event) {
   let container = doc.createElement('div');
   let btn = doc.createElement('button');
   btn.textContent = 'Explain with Claude';
-  btn.style.cssText = 'padding:4px 10px;border-radius:4px;border:1px solid #999;background:#fff;cursor:pointer;';
+  btn.style.cssText = 'padding:4px 10px;border-radius:4px;border:1px solid #999;background:#fff;cursor:pointer;-moz-window-dragging:no-drag;';
   container.appendChild(btn);
   append(container);
 
@@ -350,13 +642,7 @@ function addToolsMenu(win) {
     miLib.id = 'claude-reader-menu-lib';
     miLib.setAttribute('label', 'Ask Claude about My Library\u2026');
     miLib.addEventListener('command', () => {
-      buildDrawer(doc, {
-        title: 'Claude \u2014 My Library',
-        system: 'You are a research assistant helping search and discuss a physics Zotero library. ' +
-          'Relevant items (title + abstract snippet) matching the user\'s question are provided as context when found. ' +
-          'If nothing relevant was found, say so rather than inventing papers.',
-        getExtraContext: async (query) => await searchLibrary(query),
-      });
+      mountSidebar(win).startLibraryChat();
     });
     toolsMenu.appendChild(miLib);
 
@@ -388,6 +674,16 @@ function removeToolsMenu(win) {
   });
 }
 
+function removeSidebar(win) {
+  let doc = win.document;
+  ['claude-sidebar', 'claude-sidebar-resizer', 'claude-sidebar-style'].forEach(id => {
+    let el = doc.getElementById(id);
+    if (el) el.remove();
+  });
+  if (doc.body) doc.body.style.marginRight = '';
+  sidebarApis.delete(win);
+}
+
 // ---------- Lifecycle ----------
 
 function startup({ id, version, rootURI: ru }, reason) {
@@ -402,7 +698,7 @@ function startup({ id, version, rootURI: ru }, reason) {
     addToolsMenuWithRetry(win);
   }
 
-  Zotero.ClaudeReader = { callClaude, searchLibrary, buildDrawer };
+  Zotero.ClaudeReader = { callClaude, searchLibrary, mountSidebar, ChatStore };
   log('startup complete');
 }
 
@@ -412,6 +708,7 @@ function onMainWindowLoad({ window: win }) {
 
 function onMainWindowUnload({ window: win }) {
   removeToolsMenu(win);
+  removeSidebar(win);
 }
 
 function shutdown(data, reason) {
@@ -420,6 +717,7 @@ function shutdown(data, reason) {
     Zotero.Reader.unregisterEventListener('renderTextSelectionPopup', onSelectionPopup);
     for (let win of Zotero.getMainWindows()) {
       removeToolsMenu(win);
+      removeSidebar(win);
     }
   } catch (e) {}
   delete Zotero.ClaudeReader;
