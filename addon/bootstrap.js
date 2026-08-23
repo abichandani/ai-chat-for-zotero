@@ -305,16 +305,21 @@ function mountSidebar(win) {
 
   let state = { chat: null, system: '', getExtraContext: null };
 
-  // Pushes the rest of Zotero's UI over by setting a margin on <body>,
-  // rather than reparenting/resizing Zotero's own elements directly (that's
-  // what broke tab-switching before -- see the anchor comment above). This
-  // only mutates a style property on an element we don't otherwise touch.
+  // Pushes the rest of Zotero's UI over by setting a margin on #browser
+  // (the hbox that actually lays out the reader/tab content -- the same box
+  // Zotero's own context pane lives in as a flex sibling), rather than
+  // reparenting/resizing Zotero's own elements directly (that's what broke
+  // tab-switching before -- see the anchor comment above). This document has
+  // no <body> (it's a XUL chrome doc), and margining the doc root wouldn't
+  // resize the reader anyway since #browser is what's actually flexed.
   function applyContentPush() {
     let width = parseInt(sidebar.style.width, 10) || DEFAULT_SIDEBAR_WIDTH;
-    doc.body.style.marginRight = width + 'px';
+    let pushTarget = doc.getElementById('browser') || doc.body || doc.documentElement;
+    pushTarget.style.marginRight = width + 'px';
   }
   function clearContentPush() {
-    doc.body.style.marginRight = '';
+    let pushTarget = doc.getElementById('browser') || doc.body || doc.documentElement;
+    pushTarget.style.marginRight = '';
   }
 
   function show() {
@@ -680,7 +685,8 @@ function removeSidebar(win) {
     let el = doc.getElementById(id);
     if (el) el.remove();
   });
-  if (doc.body) doc.body.style.marginRight = '';
+  let pushTarget = doc.getElementById('browser') || doc.body;
+  if (pushTarget) pushTarget.style.marginRight = '';
   sidebarApis.delete(win);
 }
 
