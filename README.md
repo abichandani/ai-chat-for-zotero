@@ -24,25 +24,6 @@ A minimal Zotero plugin (tested on Zotero 9.0.6, 64-bit) that adds three things:
 5. **Tools → Set Claude API Key…** and paste your key.
 6. Open any PDF — you should see a "Claude" button in the toolbar.
 
-## Development
-
-Plugin source lives in [addon/](addon/) (`manifest.json`, `bootstrap.js`,
-`content/`). This repo uses
-[zotero-plugin-scaffold](https://github.com/northword/zotero-plugin-scaffold)
-for a live-reload dev loop instead of manually rebuilding/reinstalling
-the xpi:
-
-1. Copy `.env.example` to `.env` and point it at your local Zotero
-   binary and profile directory.
-2. **Close Zotero** if it's already running (the dev server launches
-   its own instance against that profile).
-3. `npm install`, then `npm start`. This launches Zotero, installs the
-   plugin from source, and rebuilds + hot-reloads it into the running
-   instance whenever you save a file under `addon/`.
-
-`npm run build` alone (without `start`) just produces the xpi for
-manual installs, as in the Install section above.
-
 ## Known limitations (this is a v1 scaffold, not a polished plugin)
 
 - **Full-text extraction now works**, using Zotero's own documented
