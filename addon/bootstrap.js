@@ -316,10 +316,28 @@ function mountSidebar(win) {
     let width = parseInt(sidebar.style.width, 10) || DEFAULT_SIDEBAR_WIDTH;
     let pushTarget = doc.getElementById('browser') || doc.body || doc.documentElement;
     pushTarget.style.marginRight = width + 'px';
+    notifyReaderResize(pushTarget);
+  }
+  // The reader (PDF.js etc.) runs as its own web app inside a nested
+  // <browser>, with its own internal split between the page view and the
+  // annotations/context pane. That inner layout only re-measures on a
+  // resize event dispatched on the reader browser's OWN contentWindow --
+  // shrinking the outer XUL box (or dispatching resize on the top chrome
+  // window) doesn't reach it, so the inner pane keeps its stale width and
+  // visually spills out past the shrunk box.
+  function notifyReaderResize(container) {
+    for (let browserEl of container.querySelectorAll('browser')) {
+      try {
+        if (browserEl.contentWindow) {
+          browserEl.contentWindow.dispatchEvent(new browserEl.contentWindow.Event('resize'));
+        }
+      } catch (e) { /* cross-process browser, can't reach contentWindow */ }
+    }
   }
   function clearContentPush() {
     let pushTarget = doc.getElementById('browser') || doc.body || doc.documentElement;
     pushTarget.style.marginRight = '';
+    notifyReaderResize(pushTarget);
   }
 
   function show() {
