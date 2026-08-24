@@ -314,7 +314,7 @@ function injectSidebarStyle(doc) {
       --cr-border: #cdcdcd; --cr-border-alt: #dadada; --cr-border-input: #d5d5d5;
       --cr-text: #222; --cr-text-alt: #333; --cr-text-muted: #444; --cr-text-faint: #888;
       --cr-resizer-hover: #bcd6f7;
-      --cr-bubble-user: #d7eaff; --cr-bubble-assistant: #e7f7e9;
+      --cr-bubble-user: var(--cr-messages-bg); --cr-bubble-assistant: #d7eaff;
       --cr-code-bg: #eef1ee; --cr-link: #2563a8;
       --cr-input-bg: #fafafa; --cr-send-hover: #eee;
       --cr-history-odd: #f4f4f4; --cr-history-even: #e3e3e3; --cr-history-hover: #d3d3d3;
@@ -326,7 +326,7 @@ function injectSidebarStyle(doc) {
         --cr-border: #4a4a4a; --cr-border-alt: #454545; --cr-border-input: #454545;
         --cr-text: #e8e8e8; --cr-text-alt: #dcdcdc; --cr-text-muted: #cfcfcf; --cr-text-faint: #9a9a9a;
         --cr-resizer-hover: #3a5a80;
-        --cr-bubble-user: #1f3b57; --cr-bubble-assistant: #1f3f2a;
+        --cr-bubble-user: #262626; --cr-bubble-assistant: #1f3b57;
         --cr-code-bg: #383838; --cr-link: #6ba6e8;
         --cr-input-bg: #262626; --cr-send-hover: #3a3a3a;
         --cr-history-odd: #303030; --cr-history-even: #383838; --cr-history-hover: #444;
@@ -392,7 +392,7 @@ function injectSidebarStyle(doc) {
       user-select: text !important; -moz-user-select: text !important; cursor: text;
       position: relative;
     }
-    #claude-sidebar .cr-msg.user { background: var(--cr-bubble-user); align-self: flex-end; max-width: 85%; }
+    #claude-sidebar .cr-msg.user { background: var(--cr-bubble-user); align-self: flex-end; max-width: 85%; border: 1px solid var(--cr-border); }
     #claude-sidebar .cr-msg.cr-collapsible { padding-bottom: 24px; }
     #claude-sidebar .cr-msg.cr-collapsed .cr-msg-body { max-height: 160px; overflow: hidden; }
     #claude-sidebar .cr-msg-toggle {
@@ -401,7 +401,7 @@ function injectSidebarStyle(doc) {
       white-space: nowrap;
     }
     #claude-sidebar .cr-msg-toggle:hover { text-decoration: underline; }
-    #claude-sidebar .cr-msg.assistant { background: var(--cr-bubble-assistant); align-self: flex-start; max-width: 85%; }
+    #claude-sidebar .cr-msg.assistant { background: var(--cr-bubble-assistant); align-self: flex-start; max-width: 95%; }
     #claude-sidebar .cr-msg.assistant p { margin: 0 0 6px 0; }
     #claude-sidebar .cr-msg.assistant p:last-child { margin-bottom: 0; }
     #claude-sidebar .cr-msg.assistant ul, #claude-sidebar .cr-msg.assistant ol { margin: 4px 0; padding-left: 20px; }
