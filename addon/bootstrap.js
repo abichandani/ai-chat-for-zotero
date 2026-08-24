@@ -165,7 +165,8 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar.cr-hidden, #claude-sidebar-resizer.cr-hidden { display: none; }
     #claude-sidebar .cr-header {
-      padding: 6px 8px; background: #f0f0f0; border-bottom: 1px solid #d5d5d5; color: #333;
+      padding: 6px 8px; background: #f9f9f9;
+      border-top: 1px solid #dadada; border-bottom: 1px solid #dadada; color: #333;
       display: flex; justify-content: space-between; align-items: center; gap: 6px;
     }
     #claude-sidebar .cr-title {
