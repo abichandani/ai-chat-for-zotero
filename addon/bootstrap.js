@@ -271,8 +271,23 @@ function injectSidebarStyle(doc) {
       border-top: 1px solid var(--cr-border-alt); border-bottom: 1px solid var(--cr-border-alt); color: var(--cr-text-alt);
       display: flex; justify-content: space-between; align-items: center; gap: 6px;
     }
+    #claude-sidebar .cr-title-wrap {
+      display: flex; align-items: center; gap: 4px; flex: 1; overflow: hidden;
+      padding: 3px 6px; border-radius: 5px; cursor: pointer;
+    }
+    #claude-sidebar .cr-title-wrap:hover { background: var(--cr-bg-hover); }
     #claude-sidebar .cr-title {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-weight: 600;
+    }
+    #claude-sidebar .cr-title-edit-icon {
+      display: none; font-size: 11px; color: var(--cr-text-muted); flex-shrink: 0;
+    }
+    #claude-sidebar .cr-title-wrap:hover .cr-title-edit-icon { display: inline; }
+    #claude-sidebar .cr-title-input {
+      flex: 1; min-width: 0; font: inherit; font-weight: 600; color: var(--cr-text);
+      background: var(--cr-bg); border: 1px solid #32728e; border-radius: 4px;
+      padding: 1px 5px; outline: none;
+      box-shadow: 0 0 0 2px rgba(50, 114, 142, 0.25);
     }
     #claude-sidebar .cr-header-btns { display: flex; gap: 2px; flex-shrink: 0; }
     #claude-sidebar .cr-header-btns [role="button"] {
@@ -310,7 +325,11 @@ function injectSidebarStyle(doc) {
     #claude-sidebar .cr-input-row {
       display: flex; flex-shrink: 0; background: var(--cr-input-bg);
       margin: 0 8px 8px 8px; border: 1px solid var(--cr-border-input); border-radius: 10px;
-      overflow: hidden;
+      overflow: hidden; transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    #claude-sidebar .cr-input-row:focus-within {
+      border-color: #32728e;
+      box-shadow: 0 0 0 3px rgba(50, 114, 142, 0.25), 0 0 12px rgba(50, 114, 142, 0.35);
     }
     #claude-sidebar textarea {
       flex: 1; border: none; background: transparent; padding: 8px; resize: none; height: 44px;
@@ -411,7 +430,10 @@ function mountSidebar(win) {
   resizer.style.right = savedWidth + 'px';
   sidebar.innerHTML = `
     <div class="cr-header">
-      <span class="cr-title">Claude</span>
+      <div class="cr-title-wrap" tabindex="0" role="button" title="Rename chat">
+        <span class="cr-title">Claude</span>
+        <span class="cr-title-edit-icon">✎</span>
+      </div>
       <div class="cr-header-btns">
         <div class="cr-new" tabindex="0" role="button" title="New chat">+</div>
         <div class="cr-history" tabindex="0" role="button" title="History">\u2630</div>
@@ -438,7 +460,12 @@ function mountSidebar(win) {
   anchor.appendChild(sidebar);
   anchor.appendChild(ctxMenu);
 
+  let titleWrap = sidebar.querySelector('.cr-title-wrap');
   let titleEl = sidebar.querySelector('.cr-title');
+  let titleInput = doc.createElement('input');
+  titleInput.className = 'cr-title-input';
+  titleInput.style.display = 'none';
+  titleWrap.insertBefore(titleInput, sidebar.querySelector('.cr-title-edit-icon'));
   let messagesEl = sidebar.querySelector('.cr-messages');
   let historyListEl = sidebar.querySelector('.cr-history-list');
   let textarea = sidebar.querySelector('textarea');
@@ -668,6 +695,41 @@ function mountSidebar(win) {
     ChatStore.upsert(state.chat);
   }
 
+  function beginTitleEdit() {
+    if (!state.chat || historyListEl.style.display !== 'none') return;
+    titleInput.value = state.chat.title || '';
+    titleEl.style.display = 'none';
+    titleInput.style.display = '';
+    titleInput.focus();
+    titleInput.select();
+  }
+
+  function commitTitleEdit() {
+    if (titleInput.style.display === 'none') return;
+    titleInput.style.display = 'none';
+    titleEl.style.display = '';
+    if (!state.chat) return;
+    let val = titleInput.value.trim();
+    if (val && val !== state.chat.title) {
+      state.chat.title = val;
+      titleEl.textContent = val;
+      persist();
+    }
+  }
+
+  function cancelTitleEdit() {
+    titleInput.style.display = 'none';
+    titleEl.style.display = '';
+  }
+
+  titleWrap.addEventListener('click', beginTitleEdit);
+  titleInput.addEventListener('click', (e) => e.stopPropagation());
+  titleInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); commitTitleEdit(); }
+    else if (e.key === 'Escape') { e.preventDefault(); cancelTitleEdit(); }
+  });
+  titleInput.addEventListener('blur', commitTitleEdit);
+
   function showChatView() {
     messagesEl.style.display = '';
     inputRow.style.display = '';
@@ -676,6 +738,7 @@ function mountSidebar(win) {
 
   // opts: { title, system, getExtraContext(query), seedText }
   function startChat(opts) {
+    cancelTitleEdit();
     state.chat = {
       id: makeChatId(),
       title: opts.title || '',
@@ -702,6 +765,7 @@ function mountSidebar(win) {
   function openSavedChat(id) {
     let chat = ChatStore.get(id);
     if (!chat) return;
+    cancelTitleEdit();
     state.chat = chat;
     state.system = 'You are Claude, continuing a previous conversation' +
       (chat.contextLabel ? ' about: ' + chat.contextLabel : '') +
@@ -714,6 +778,7 @@ function mountSidebar(win) {
   }
 
   function showHistory() {
+    cancelTitleEdit();
     let chats = ChatStore.list();
     historyListEl.innerHTML = '';
     if (!chats.length) {
