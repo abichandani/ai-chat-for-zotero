@@ -531,22 +531,27 @@ function mountSidebar(win) {
     let item = ctxMenu.querySelector(`[data-action="${action}"]`);
     item.classList.toggle('disabled', !enabled);
   }
+  // Selection state is captured up front, at the moment the menu opens --
+  // querying it again later (e.g. from the click handler) can come back
+  // empty, since focus/selection in this embedded chrome context doesn't
+  // reliably survive past the initial contextmenu event.
+  let ctxSelectedText = '';
   sidebar.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     ctxTarget = e.target;
     let isTextarea = ctxTarget === textarea || ctxTarget.closest('textarea') === textarea;
-    let hasSelection = isTextarea
-      ? textarea.selectionStart !== textarea.selectionEnd
-      : !!doc.getSelection().toString();
-    setCtxItemEnabled('cut', isTextarea && hasSelection);
-    setCtxItemEnabled('copy', hasSelection);
+    ctxSelectedText = isTextarea
+      ? textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)
+      : doc.getSelection().toString();
+    setCtxItemEnabled('cut', isTextarea);
+    setCtxItemEnabled('copy', true);
     setCtxItemEnabled('paste', isTextarea);
     ctxMenu.style.left = e.clientX + 'px';
     ctxMenu.style.top = e.clientY + 'px';
     ctxMenu.style.display = 'block';
   });
   doc.addEventListener('mousedown', (e) => {
-    if (ctxMenu.style.display !== 'none' && !ctxMenu.contains(e.target)) hideCtxMenu();
+    if (ctxMenu.style.display === 'block' && !ctxMenu.contains(e.target)) hideCtxMenu();
   });
   ctxMenu.addEventListener('click', (e) => {
     let item = e.target.closest('.cr-ctx-item');
@@ -554,27 +559,26 @@ function mountSidebar(win) {
     let isTextarea = ctxTarget === textarea || (ctxTarget && ctxTarget.closest && ctxTarget.closest('textarea') === textarea);
     let action = item.dataset.action;
     if (action === 'copy') {
-      let sel = isTextarea
-        ? textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)
-        : doc.getSelection().toString();
-      if (sel) copyToClipboard(sel);
+      // Fall back to the whole message/textarea when nothing was selected,
+      // so "Copy" on a message bubble still does something useful.
+      let text = ctxSelectedText || (isTextarea ? textarea.value : (ctxTarget && ctxTarget.closest('.cr-msg') || {}).textContent) || '';
+      if (text) copyToClipboard(text);
     } else if (action === 'cut' && isTextarea) {
       let start = textarea.selectionStart, end = textarea.selectionEnd;
-      let sel = textarea.value.slice(start, end);
-      if (sel) {
-        copyToClipboard(sel);
+      if (start !== end) {
+        copyToClipboard(ctxSelectedText);
         textarea.value = textarea.value.slice(0, start) + textarea.value.slice(end);
         textarea.selectionStart = textarea.selectionEnd = start;
-        textarea.focus();
       }
+      textarea.focus();
     } else if (action === 'paste' && isTextarea) {
       let text = readFromClipboard();
       if (text) {
         let start = textarea.selectionStart, end = textarea.selectionEnd;
         textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
         textarea.selectionStart = textarea.selectionEnd = start + text.length;
-        textarea.focus();
       }
+      textarea.focus();
     }
     hideCtxMenu();
   });
