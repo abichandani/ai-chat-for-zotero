@@ -82,6 +82,37 @@ async function getReaderFullText(itemID) {
   return text;
 }
 
+// Reader instance for the tab currently showing in the window, or null if
+// the active tab isn't a reader (e.g. My Library view).
+function getActiveReader(win) {
+  let tabID = win.Zotero_Tabs && win.Zotero_Tabs.selectedID;
+  return tabID ? Zotero.Reader.getByTabID(tabID) : null;
+}
+
+// Builds the title + system prompt used to seed a chat about a paper
+// currently open in a reader. Shared by the reader-toolbar button and any
+// sidebar entry point that wants to default to the open PDF's context.
+async function buildReaderSystemPrompt(reader) {
+  let item = await Zotero.Items.getAsync(reader.itemID);
+  let parent = item.parentID ? await Zotero.Items.getAsync(item.parentID) : item;
+  let title = parent.getField('title') || 'this paper';
+  let abstract = parent.getField('abstractNote') || '';
+  let fullText = await getReaderFullText(reader.itemID);
+
+  let system = fullText
+    ? `You are discussing the paper "${title}" with a physics researcher. ` +
+      `Abstract: ${abstract || '(none available)'}.\n\n` +
+      `Full text of the paper (may be truncated):\n${fullText}\n\n` +
+      `Answer using this text plus your general knowledge of the field. Be precise and concise. ` +
+      `If asked about something not in the excerpt above, say so rather than guessing.`
+    : `You are discussing the paper "${title}" with a physics researcher. ` +
+      `Abstract: ${abstract || '(none available)'}. ` +
+      `Full text could not be extracted (the PDF may not be indexed yet — try again in a moment, ` +
+      `or Zotero > right-click item > "Reindex Item"). They may paste excerpts manually in the meantime.`;
+
+  return { title, system };
+}
+
 // A very simple keyword search over the library, used to give the
 // "ask about my library" chat some grounding. Not semantic search —
 // just Zotero's own quick-search fields.
@@ -817,7 +848,22 @@ function mountSidebar(win) {
     show();
   }
 
-  function startLibraryChat() {
+  async function startLibraryChat() {
+    let reader = getActiveReader(win);
+    if (reader) {
+      try {
+        let { title, system } = await buildReaderSystemPrompt(reader);
+        startChat({
+          title: 'Claude — ' + title,
+          system: system + '\n\nThe user may also ask about other items in their physics Zotero library; ' +
+            'relevant items (title + abstract snippet) matching the question are provided as extra context when found.',
+          getExtraContext: async (query) => await searchLibrary(query),
+        });
+        return;
+      } catch (e) {
+        log('startLibraryChat: reader context failed, falling back to library chat: ' + e.message);
+      }
+    }
     startChat({
       title: '',
       system: 'You are a research assistant helping search and discuss a physics Zotero library. ' +
@@ -941,22 +987,7 @@ async function onReaderToolbar(event) {
     let originalIcon = btn.innerHTML;
     btn.textContent = '\u2026';
     try {
-      let item = await Zotero.Items.getAsync(reader.itemID);
-      let parent = item.parentID ? await Zotero.Items.getAsync(item.parentID) : item;
-      let title = parent.getField('title') || 'this paper';
-      let abstract = parent.getField('abstractNote') || '';
-      let fullText = await getReaderFullText(reader.itemID);
-
-      let system = fullText
-        ? `You are discussing the paper "${title}" with a physics researcher. ` +
-          `Abstract: ${abstract || '(none available)'}.\n\n` +
-          `Full text of the paper (may be truncated):\n${fullText}\n\n` +
-          `Answer using this text plus your general knowledge of the field. Be precise and concise. ` +
-          `If asked about something not in the excerpt above, say so rather than guessing.`
-        : `You are discussing the paper "${title}" with a physics researcher. ` +
-          `Abstract: ${abstract || '(none available)'}. ` +
-          `Full text could not be extracted (the PDF may not be indexed yet \u2014 try again in a moment, ` +
-          `or Zotero > right-click item > "Reindex Item"). They may paste excerpts manually in the meantime.`;
+      let { title, system } = await buildReaderSystemPrompt(reader);
 
       let win = Zotero.getMainWindow ? Zotero.getMainWindow() : Zotero.getMainWindows()[0];
       mountSidebar(win).startChat({ title: 'Claude \u2014 ' + title, system });
