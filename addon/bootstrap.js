@@ -504,11 +504,11 @@ function mountSidebar(win) {
   function readFromClipboard() {
     try {
       let trans = Cc['@mozilla.org/widget/transferable;1'].createInstance(Ci.nsITransferable);
-      trans.init(null);
-      trans.addDataFlavor('text/unicode');
+      trans.init(win.docShell);
+      trans.addDataFlavor('text/plain');
       Services.clipboard.getData(trans, Services.clipboard.kGlobalClipboard);
       let str = {};
-      trans.getTransferData('text/unicode', str);
+      trans.getTransferData('text/plain', str);
       if (str.value) {
         return str.value.QueryInterface(Ci.nsISupportsString).data;
       }
@@ -516,6 +516,31 @@ function mountSidebar(win) {
       log('readFromClipboard failed: ' + e.message);
     }
     return '';
+  }
+
+  // nsITransferable is finicky about the exact flavor string and load
+  // context across Gecko versions, so paste is done the simple way instead:
+  // move focus/caret into the textarea and let the platform's own paste
+  // command run, falling back to the manual transferable read above only
+  // if that's unavailable.
+  function pasteIntoTextarea() {
+    let start = textarea.selectionStart, end = textarea.selectionEnd;
+    textarea.focus();
+    textarea.selectionStart = start;
+    textarea.selectionEnd = end;
+    let ok = false;
+    try {
+      ok = doc.execCommand('paste');
+    } catch (e) {
+      log('execCommand paste failed: ' + e.message);
+    }
+    if (!ok) {
+      let text = readFromClipboard();
+      if (text) {
+        textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+        textarea.selectionStart = textarea.selectionEnd = start + text.length;
+      }
+    }
   }
 
   // Right-click context menu for the sidebar (Cut/Copy/Paste). Chat bubbles
@@ -582,14 +607,8 @@ function mountSidebar(win) {
       textarea.focus();
     } else if ((action === 'paste' || action === 'pasteplain') && isTextarea) {
       // The target is a plain-text textarea, so there's nothing for "as
-      // plain text" to strip -- both read the same text/unicode flavor.
-      let text = readFromClipboard();
-      if (text) {
-        let start = textarea.selectionStart, end = textarea.selectionEnd;
-        textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
-        textarea.selectionStart = textarea.selectionEnd = start + text.length;
-      }
-      textarea.focus();
+      // plain text" to strip -- both paths behave the same.
+      pasteIntoTextarea();
     }
     hideCtxMenu();
   });
