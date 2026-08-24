@@ -331,14 +331,23 @@ function injectSidebarStyle(doc) {
     #claude-sidebar .cr-header-btns .cr-close { font-size: 14px; }
     #claude-sidebar .cr-header-btns [role="button"]:hover { background: var(--cr-bg-hover); }
     #claude-sidebar .cr-messages {
-      flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+      flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 13px;
       background: var(--cr-messages-bg);
     }
     #claude-sidebar .cr-msg {
       padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; line-height: 1.4;
       user-select: text !important; -moz-user-select: text !important; cursor: text;
+      position: relative;
     }
     #claude-sidebar .cr-msg.user { background: var(--cr-bubble-user); align-self: flex-end; max-width: 85%; }
+    #claude-sidebar .cr-msg.cr-collapsible { padding-bottom: 24px; }
+    #claude-sidebar .cr-msg.cr-collapsed .cr-msg-body { max-height: 160px; overflow: hidden; }
+    #claude-sidebar .cr-msg-toggle {
+      position: absolute; right: 9px; bottom: 5px; font-size: 11px; font-weight: 600;
+      color: var(--cr-text-muted); cursor: pointer; user-select: none; -moz-user-select: none;
+      white-space: nowrap;
+    }
+    #claude-sidebar .cr-msg-toggle:hover { text-decoration: underline; }
     #claude-sidebar .cr-msg.assistant { background: var(--cr-bubble-assistant); align-self: flex-start; max-width: 85%; }
     #claude-sidebar .cr-msg.assistant p { margin: 0 0 6px 0; }
     #claude-sidebar .cr-msg.assistant p:last-child { margin-bottom: 0; }
@@ -357,7 +366,7 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar .cr-msg.assistant a { color: var(--cr-link); }
     #claude-sidebar .cr-input-row {
-      display: flex; flex-shrink: 0; background: var(--cr-input-bg);
+      display: flex; flex-direction: column; flex-shrink: 0; background: var(--cr-input-bg);
       margin: 0 8px 8px 8px; border: 1px solid var(--cr-border-input); border-radius: 10px;
       overflow: hidden; transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
@@ -366,14 +375,20 @@ function injectSidebarStyle(doc) {
       box-shadow: 0 0 0 3px rgba(50, 114, 142, 0.25), 0 0 12px rgba(50, 114, 142, 0.35);
     }
     #claude-sidebar textarea {
-      flex: 1; border: none; background: transparent; padding: 8px; resize: none; height: 44px;
+      width: 100%; box-sizing: border-box; border: none; background: transparent;
+      padding: 8px; resize: none; height: 44px; overflow-y: auto;
       font-family: inherit; font-size: 12.5px; color: var(--cr-text);
     }
     #claude-sidebar textarea:focus { outline: none; }
+    #claude-sidebar .cr-input-actions {
+      display: flex; justify-content: flex-end; align-items: center; flex-shrink: 0;
+      padding: 6px 8px; border-top: 1px solid var(--cr-border-input);
+    }
     #claude-sidebar .cr-send {
-      border: none; border-left: 1px solid var(--cr-border-input); background: transparent; color: var(--cr-text-muted);
-      padding: 0 14px; cursor: pointer; font-weight: 600;
-      flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+      border: 1px solid var(--cr-border-input); border-radius: 6px; background: transparent;
+      color: var(--cr-text-muted); height: 26px; padding: 0 14px; box-sizing: border-box;
+      cursor: pointer; font-weight: 600; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
     }
     #claude-sidebar .cr-send:hover { background: var(--cr-send-hover); }
     #claude-sidebar .cr-history-list { flex: 1; overflow-y: auto; padding: 6px; }
@@ -478,7 +493,9 @@ function mountSidebar(win) {
     <div class="cr-history-list" style="display:none"></div>
     <div class="cr-input-row">
       <textarea placeholder="Ask Claude\u2026"></textarea>
-      <div class="cr-send" tabindex="0" role="button">Send</div>
+      <div class="cr-input-actions">
+        <div class="cr-send" tabindex="0" role="button">Send</div>
+      </div>
     </div>
   `;
 
@@ -628,6 +645,7 @@ function mountSidebar(win) {
         textarea.selectionStart = textarea.selectionEnd = start + text.length;
       }
     }
+    autosizeTextarea();
   }
 
   // Right-click context menu for the sidebar (Cut/Copy/Paste). Chat bubbles
@@ -691,6 +709,7 @@ function mountSidebar(win) {
         copyToClipboard(ctxSelectedText);
         textarea.value = textarea.value.slice(0, start) + textarea.value.slice(end);
         textarea.selectionStart = textarea.selectionEnd = start;
+        autosizeTextarea();
       }
       textarea.focus();
     } else if (action === 'paste' && isTextarea) {
@@ -711,6 +730,9 @@ function mountSidebar(win) {
     el.className = 'cr-msg ' + role;
     setMsgContent(el, role, text);
     messagesEl.appendChild(el);
+    // Overflow can only be measured once the bubble is laid out, so the
+    // See more / See less affordance is attached after insertion.
+    if (role === 'user') applyCollapse(el);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return el;
   }
@@ -720,8 +742,32 @@ function mountSidebar(win) {
     if (role === 'assistant') {
       el.innerHTML = renderMarkdown(text);
     } else {
-      el.textContent = text;
+      el.textContent = '';
+      let body = doc.createElement('div');
+      body.className = 'cr-msg-body';
+      body.textContent = text;
+      el.appendChild(body);
     }
+  }
+
+  // Long user messages start collapsed behind a "See more" toggle. Must match
+  // the max-height of .cr-msg.cr-collapsed .cr-msg-body in the stylesheet.
+  const MSG_COLLAPSE_MAX = 160;
+
+  function applyCollapse(el) {
+    let body = el.querySelector('.cr-msg-body');
+    if (!body || body.scrollHeight <= MSG_COLLAPSE_MAX) return;
+    el.classList.add('cr-collapsible', 'cr-collapsed');
+    let toggle = doc.createElement('div');
+    toggle.className = 'cr-msg-toggle';
+    toggle.setAttribute('role', 'button');
+    toggle.setAttribute('tabindex', '0');
+    toggle.textContent = 'See more';
+    toggle.addEventListener('click', () => {
+      let collapsed = el.classList.toggle('cr-collapsed');
+      toggle.textContent = collapsed ? 'See more' : 'See less';
+    });
+    el.appendChild(toggle);
   }
 
   function persist() {
@@ -787,11 +833,12 @@ function mountSidebar(win) {
     titleEl.textContent = opts.title || 'Claude';
     titleWrap.classList.add('cr-locked');
     showChatView();
-    renderMessages();
     show();
+    renderMessages();
     if (opts.seedText) {
       textarea.value = opts.seedText;
     }
+    autosizeTextarea();
     textarea.focus();
   }
 
@@ -810,8 +857,8 @@ function mountSidebar(win) {
     titleEl.textContent = chat.title || 'Claude';
     titleWrap.classList.remove('cr-locked');
     showChatView();
-    renderMessages();
     show();
+    renderMessages();
   }
 
   function showHistory() {
@@ -906,6 +953,7 @@ function mountSidebar(win) {
     let text = (prefilled !== undefined ? prefilled : textarea.value).trim();
     if (!text) return;
     textarea.value = '';
+    autosizeTextarea();
     appendMsg('user', text);
     state.chat.messages.push({ role: 'user', content: text });
     let needsTitle = !state.chat.title;
@@ -928,7 +976,18 @@ function mountSidebar(win) {
     }
   }
 
+  // Grows the input with its content, up to 35% of the sidebar height; past
+  // that the textarea scrolls internally.
+  const TEXTAREA_MIN_HEIGHT = 44;
+  function autosizeTextarea() {
+    textarea.style.height = 'auto';
+    let max = Math.max(TEXTAREA_MIN_HEIGHT, Math.round(sidebar.clientHeight * 0.35));
+    let next = Math.min(Math.max(textarea.scrollHeight, TEXTAREA_MIN_HEIGHT), max);
+    textarea.style.height = next + 'px';
+  }
+
   sendBtn.addEventListener('click', () => send());
+  textarea.addEventListener('input', autosizeTextarea);
   textarea.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
