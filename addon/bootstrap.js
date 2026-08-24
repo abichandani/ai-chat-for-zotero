@@ -229,7 +229,7 @@ function injectSidebarStyle(doc) {
   style.id = 'claude-sidebar-style';
   style.textContent = `
     #claude-sidebar, #cr-ctxmenu {
-      --cr-bg: #fff; --cr-bg-alt: #f9f9f9; --cr-bg-hover: #e2e2e2;
+      --cr-bg: #fff; --cr-bg-alt: #f9f9f9; --cr-bg-hover: #e2e2e2; --cr-messages-bg: #fff;
       --cr-border: #cdcdcd; --cr-border-alt: #dadada; --cr-border-input: #d5d5d5;
       --cr-text: #222; --cr-text-alt: #333; --cr-text-muted: #444; --cr-text-faint: #888;
       --cr-resizer-hover: #bcd6f7;
@@ -241,7 +241,7 @@ function injectSidebarStyle(doc) {
     }
     @media (prefers-color-scheme: dark) {
       #claude-sidebar, #cr-ctxmenu {
-        --cr-bg: #2b2b2b; --cr-bg-alt: #323232; --cr-bg-hover: #3f3f3f;
+        --cr-bg: #2b2b2b; --cr-bg-alt: #272727; --cr-bg-hover: #3f3f3f; --cr-messages-bg: #323232;
         --cr-border: #4a4a4a; --cr-border-alt: #454545; --cr-border-input: #454545;
         --cr-text: #e8e8e8; --cr-text-alt: #dcdcdc; --cr-text-muted: #cfcfcf; --cr-text-faint: #9a9a9a;
         --cr-resizer-hover: #3a5a80;
@@ -283,6 +283,7 @@ function injectSidebarStyle(doc) {
     #claude-sidebar .cr-header-btns [role="button"]:hover { background: var(--cr-bg-hover); }
     #claude-sidebar .cr-messages {
       flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+      background: var(--cr-messages-bg);
     }
     #claude-sidebar .cr-msg {
       padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; line-height: 1.4;
