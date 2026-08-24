@@ -330,6 +330,8 @@ function injectSidebarStyle(doc) {
       display: flex; align-items: center; justify-content: center;
     }
     #claude-sidebar .cr-header-btns .cr-close { font-size: 14px; }
+    #claude-sidebar .cr-header-btns .cr-new svg { width: 21px; height: 21px; display: block; }
+    #claude-sidebar .cr-header-btns .cr-history svg { width: 18px; height: 18px; display: block; }
     #claude-sidebar .cr-header-btns [role="button"]:hover { background: var(--cr-bg-hover); }
     #claude-sidebar .cr-messages {
       flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 13px;
@@ -488,8 +490,8 @@ function mountSidebar(win) {
         <span class="cr-title-edit-icon">✎</span>
       </div>
       <div class="cr-header-btns">
-        <div class="cr-new" tabindex="0" role="button" title="New chat">+</div>
-        <div class="cr-history" tabindex="0" role="button" title="History">\u2630</div>
+        <div class="cr-new" tabindex="0" role="button" title="New chat"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.42h6.08v7.08h-2.41l-.05 2.03-1.45-2.03H4V8.5"/><path d="M2.4 4.5h3.2M4 2.9v3.2"/></svg></div>
+        <div class="cr-history" tabindex="0" role="button" title="History"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.4V8l2.6 1.6"/></svg></div>
         <div class="cr-close" tabindex="0" role="button" title="Hide sidebar">\u2715</div>
       </div>
     </div>
