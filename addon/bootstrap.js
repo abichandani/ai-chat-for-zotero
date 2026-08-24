@@ -546,9 +546,16 @@ function mountSidebar(win) {
     setCtxItemEnabled('cut', isTextarea);
     setCtxItemEnabled('copy', true);
     setCtxItemEnabled('paste', isTextarea);
-    ctxMenu.style.left = e.clientX + 'px';
-    ctxMenu.style.top = e.clientY + 'px';
+    // Measure before clamping -- the menu needs a size to know whether it
+    // overflows the window (e.g. opened near the taskbar/bottom edge).
+    ctxMenu.style.left = '0px';
+    ctxMenu.style.top = '0px';
     ctxMenu.style.display = 'block';
+    let menuW = ctxMenu.offsetWidth, menuH = ctxMenu.offsetHeight;
+    let left = Math.min(e.clientX, win.innerWidth - menuW - 4);
+    let top = Math.min(e.clientY, win.innerHeight - menuH - 4);
+    ctxMenu.style.left = Math.max(0, left) + 'px';
+    ctxMenu.style.top = Math.max(0, top) + 'px';
   });
   doc.addEventListener('mousedown', (e) => {
     if (ctxMenu.style.display === 'block' && !ctxMenu.contains(e.target)) hideCtxMenu();
