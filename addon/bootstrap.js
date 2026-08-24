@@ -98,6 +98,84 @@ async function searchLibrary(query, limit = 6) {
   }).join('\n');
 }
 
+// ---------- Minimal markdown rendering ----------
+// No bundled markdown library is available in a bootstrap plugin, so this
+// handles just the subset Claude actually produces in chat replies: headers,
+// bold/italic, inline code, fenced code blocks, links, and (un)ordered lists.
+// Everything is HTML-escaped first so raw model output can never inject markup.
+
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function renderInlineMarkdown(s) {
+  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  return s;
+}
+
+function renderMarkdown(text) {
+  let escaped = escapeHtml(text);
+  let lines = escaped.split('\n');
+  let html = [];
+  let i = 0;
+  let listBuf = null; // { tag, items: [] }
+  function flushList() {
+    if (listBuf) {
+      html.push(`<${listBuf.tag}>` + listBuf.items.map(li => `<li>${renderInlineMarkdown(li)}</li>`).join('') + `</${listBuf.tag}>`);
+      listBuf = null;
+    }
+  }
+  while (i < lines.length) {
+    let line = lines[i];
+    let fence = line.match(/^```/);
+    if (fence) {
+      flushList();
+      let code = [];
+      i++;
+      while (i < lines.length && !/^```/.test(lines[i])) {
+        code.push(lines[i]);
+        i++;
+      }
+      html.push('<pre><code>' + code.join('\n') + '</code></pre>');
+      i++;
+      continue;
+    }
+    let heading = line.match(/^(#{1,3})\s+(.*)$/);
+    if (heading) {
+      flushList();
+      let level = heading[1].length;
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
+      i++;
+      continue;
+    }
+    let ol = line.match(/^\s*\d+\.\s+(.*)$/);
+    let ul = line.match(/^\s*[-*]\s+(.*)$/);
+    if (ol || ul) {
+      let tag = ol ? 'ol' : 'ul';
+      let content = (ol || ul)[1];
+      if (!listBuf || listBuf.tag !== tag) {
+        flushList();
+        listBuf = { tag, items: [] };
+      }
+      listBuf.items.push(content);
+      i++;
+      continue;
+    }
+    flushList();
+    if (line.trim() === '') {
+      i++;
+      continue;
+    }
+    html.push(`<p>${renderInlineMarkdown(line)}</p>`);
+    i++;
+  }
+  flushList();
+  return html.join('');
+}
+
 // ---------- Chat history storage ----------
 // Persisted as a single JSON blob in prefs (bootstrap plugins have no
 // bundled DB access). Capped so the pref blob can't grow unbounded.
@@ -174,9 +252,10 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar .cr-header-btns { display: flex; gap: 2px; flex-shrink: 0; }
     #claude-sidebar .cr-header-btns [role="button"] {
-      cursor: pointer; font-size: 13px; padding: 3px 7px; border-radius: 4px; color: #444;
+      cursor: pointer; font-size: 18px; line-height: 1; padding: 5px 10px; border-radius: 5px; color: #444;
       display: flex; align-items: center; justify-content: center;
     }
+    #claude-sidebar .cr-header-btns .cr-close { font-size: 14px; }
     #claude-sidebar .cr-header-btns [role="button"]:hover { background: #e2e2e2; }
     #claude-sidebar .cr-messages {
       flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 8px;
@@ -185,8 +264,24 @@ function injectSidebarStyle(doc) {
       padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; line-height: 1.4;
       user-select: text !important; -moz-user-select: text !important; cursor: text;
     }
-    #claude-sidebar .cr-msg.user { background: #eef2f8; align-self: flex-end; max-width: 85%; }
-    #claude-sidebar .cr-msg.assistant { background: #f5f5f5; align-self: flex-start; max-width: 85%; }
+    #claude-sidebar .cr-msg.user { background: #d7eaff; align-self: flex-end; max-width: 85%; }
+    #claude-sidebar .cr-msg.assistant { background: #e7f7e9; align-self: flex-start; max-width: 85%; }
+    #claude-sidebar .cr-msg.assistant p { margin: 0 0 6px 0; }
+    #claude-sidebar .cr-msg.assistant p:last-child { margin-bottom: 0; }
+    #claude-sidebar .cr-msg.assistant ul, #claude-sidebar .cr-msg.assistant ol { margin: 4px 0; padding-left: 20px; }
+    #claude-sidebar .cr-msg.assistant pre {
+      background: #eef1ee; border-radius: 5px; padding: 6px 8px; overflow-x: auto;
+      white-space: pre; margin: 4px 0;
+    }
+    #claude-sidebar .cr-msg.assistant code {
+      background: #eef1ee; border-radius: 3px; padding: 1px 4px; font-family: Menlo, Consolas, monospace; font-size: 11.5px;
+    }
+    #claude-sidebar .cr-msg.assistant pre code { background: transparent; padding: 0; }
+    #claude-sidebar .cr-msg.assistant strong { font-weight: 700; }
+    #claude-sidebar .cr-msg.assistant h1, #claude-sidebar .cr-msg.assistant h2, #claude-sidebar .cr-msg.assistant h3 {
+      margin: 6px 0 4px 0; font-size: 1.05em;
+    }
+    #claude-sidebar .cr-msg.assistant a { color: #2563a8; }
     #claude-sidebar .cr-input-row {
       display: flex; border-top: 1px solid #d5d5d5; flex-shrink: 0; background: #fafafa;
     }
@@ -205,7 +300,9 @@ function injectSidebarStyle(doc) {
     #claude-sidebar .cr-history-item {
       padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px;
     }
-    #claude-sidebar .cr-history-item:hover { background: #f0f0f0; }
+    #claude-sidebar .cr-history-item:nth-child(odd) { background: #f4f4f4; }
+    #claude-sidebar .cr-history-item:nth-child(even) { background: #e3e3e3; }
+    #claude-sidebar .cr-history-item:hover { background: #d3d3d3; }
     #claude-sidebar .cr-history-item .cr-hi-title {
       font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #222;
     }
@@ -387,10 +484,18 @@ function mountSidebar(win) {
   function appendMsg(role, text) {
     let el = doc.createElement('div');
     el.className = 'cr-msg ' + role;
-    el.textContent = text;
+    setMsgContent(el, role, text);
     messagesEl.appendChild(el);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return el;
+  }
+
+  function setMsgContent(el, role, text) {
+    if (role === 'assistant') {
+      el.innerHTML = renderMarkdown(text);
+    } else {
+      el.textContent = text;
+    }
   }
 
   function persist() {
@@ -502,7 +607,7 @@ function mountSidebar(win) {
       let extraContext = state.getExtraContext ? await state.getExtraContext(text) : '';
       let system = state.system + (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
       let reply = await callClaude(state.chat.messages, system);
-      placeholder.textContent = reply;
+      setMsgContent(placeholder, 'assistant', reply);
       state.chat.messages.push({ role: 'assistant', content: reply });
       persist();
     } catch (e) {
