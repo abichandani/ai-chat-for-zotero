@@ -366,9 +366,12 @@ function injectSidebarStyle(doc) {
       margin: 6px 0 4px 0; font-size: 1.05em;
     }
     #claude-sidebar .cr-msg.assistant a { color: var(--cr-link); }
+    #claude-sidebar .cr-input-area {
+      flex-shrink: 0; padding: 0 8px 8px 8px; background: var(--cr-messages-bg);
+    }
     #claude-sidebar .cr-input-row {
       display: flex; flex-direction: column; flex-shrink: 0; background: var(--cr-input-bg);
-      margin: 0 8px 8px 8px; border: 1px solid var(--cr-border-input); border-radius: 10px;
+      border: 1px solid var(--cr-border-input); border-radius: 10px;
       overflow: hidden; transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
     #claude-sidebar .cr-input-row:focus-within {
@@ -492,10 +495,12 @@ function mountSidebar(win) {
     </div>
     <div class="cr-messages"></div>
     <div class="cr-history-list" style="display:none"></div>
-    <div class="cr-input-row">
-      <textarea placeholder="Ask Claude\u2026"></textarea>
-      <div class="cr-input-actions">
-        <div class="cr-send" tabindex="0" role="button">Send</div>
+    <div class="cr-input-area">
+      <div class="cr-input-row">
+        <textarea placeholder="Ask Claude\u2026"></textarea>
+        <div class="cr-input-actions">
+          <div class="cr-send" tabindex="0" role="button">Send</div>
+        </div>
       </div>
     </div>
   `;
@@ -525,7 +530,7 @@ function mountSidebar(win) {
   let closeBtn = sidebar.querySelector('.cr-close');
   let newBtn = sidebar.querySelector('.cr-new');
   let historyBtn = sidebar.querySelector('.cr-history');
-  let inputRow = sidebar.querySelector('.cr-input-row');
+  let inputArea = sidebar.querySelector('.cr-input-area');
 
   let state = { chat: null, system: '', getExtraContext: null };
 
@@ -817,7 +822,7 @@ function mountSidebar(win) {
 
   function showChatView() {
     messagesEl.style.display = '';
-    inputRow.style.display = '';
+    inputArea.style.display = '';
     historyListEl.style.display = 'none';
   }
 
@@ -893,7 +898,7 @@ function mountSidebar(win) {
       }
     }
     messagesEl.style.display = 'none';
-    inputRow.style.display = 'none';
+    inputArea.style.display = 'none';
     historyListEl.style.display = '';
     titleEl.textContent = 'History';
     show();
