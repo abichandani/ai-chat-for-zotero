@@ -394,9 +394,14 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar .cr-msg.user { background: var(--cr-bubble-user); align-self: flex-end; max-width: 85%; border: 1px solid var(--cr-border); }
     #claude-sidebar .cr-msg.cr-collapsible { padding-bottom: 24px; }
-    #claude-sidebar .cr-msg.cr-collapsed .cr-msg-body { max-height: 160px; overflow: hidden; }
+    #claude-sidebar .cr-msg.cr-collapsed .cr-msg-body { max-height: var(--cr-collapse-max); overflow: hidden; }
+    #claude-sidebar .cr-msg.cr-collapsed::after {
+      content: ''; position: absolute; left: 0; right: 0; top: 50%; bottom: 0;
+      background: linear-gradient(to bottom, transparent, var(--cr-bubble-user));
+      opacity: 0.8; pointer-events: none;
+    }
     #claude-sidebar .cr-msg-toggle {
-      position: absolute; right: 9px; bottom: 5px; font-size: 11px; font-weight: 600;
+      position: absolute; right: 9px; bottom: 5px; z-index: 1; font-size: 11px; font-weight: 600;
       color: var(--cr-text-muted); cursor: pointer; user-select: none; -moz-user-select: none;
       white-space: nowrap;
     }
@@ -829,13 +834,24 @@ function mountSidebar(win) {
     }
   }
 
-  // Long user messages start collapsed behind a "See more" toggle. Must match
-  // the max-height of .cr-msg.cr-collapsed .cr-msg-body in the stylesheet.
-  const MSG_COLLAPSE_MAX = 160;
+  // User messages taller than this many lines start collapsed behind a
+  // "See more" toggle.
+  const MSG_COLLAPSE_LINES = 5;
+
+  function lineHeightOf(el) {
+    let cs = el.ownerDocument.defaultView.getComputedStyle(el);
+    let lh = parseFloat(cs.lineHeight);
+    if (!lh) lh = parseFloat(cs.fontSize) * 1.4;
+    return lh;
+  }
 
   function applyCollapse(el) {
     let body = el.querySelector('.cr-msg-body');
-    if (!body || body.scrollHeight <= MSG_COLLAPSE_MAX) return;
+    if (!body) return;
+    // Allow a sub-pixel slack so an exactly-5-line message isn't collapsed.
+    let max = Math.round(lineHeightOf(body) * MSG_COLLAPSE_LINES);
+    if (body.scrollHeight <= max + 1) return;
+    el.style.setProperty('--cr-collapse-max', max + 'px');
     el.classList.add('cr-collapsible', 'cr-collapsed');
     let toggle = doc.createElement('div');
     toggle.className = 'cr-msg-toggle';
