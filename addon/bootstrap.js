@@ -283,6 +283,9 @@ function injectSidebarStyle(doc) {
       display: none; font-size: 11px; color: var(--cr-text-muted); flex-shrink: 0;
     }
     #claude-sidebar .cr-title-wrap:hover .cr-title-edit-icon { display: inline; }
+    #claude-sidebar .cr-title-wrap.cr-locked { cursor: default; }
+    #claude-sidebar .cr-title-wrap.cr-locked:hover { background: none; }
+    #claude-sidebar .cr-title-wrap.cr-locked:hover .cr-title-edit-icon { display: none; }
     #claude-sidebar .cr-title-input {
       flex: 1; min-width: 0; font: inherit; font-weight: 600; color: var(--cr-text);
       background: var(--cr-bg); border: 1px solid #32728e; border-radius: 4px;
@@ -697,6 +700,7 @@ function mountSidebar(win) {
 
   function beginTitleEdit() {
     if (!state.chat || historyListEl.style.display !== 'none') return;
+    if (titleWrap.classList.contains('cr-locked')) return;
     titleInput.value = state.chat.title || '';
     titleEl.style.display = 'none';
     titleInput.style.display = '';
@@ -750,6 +754,7 @@ function mountSidebar(win) {
     state.system = opts.system || '';
     state.getExtraContext = opts.getExtraContext || null;
     titleEl.textContent = opts.title || 'Claude';
+    titleWrap.classList.add('cr-locked');
     showChatView();
     renderMessages();
     show();
@@ -772,6 +777,7 @@ function mountSidebar(win) {
       '. Use the prior messages as context.';
     state.getExtraContext = null;
     titleEl.textContent = chat.title || 'Claude';
+    titleWrap.classList.remove('cr-locked');
     showChatView();
     renderMessages();
     show();
@@ -779,6 +785,7 @@ function mountSidebar(win) {
 
   function showHistory() {
     cancelTitleEdit();
+    titleWrap.classList.add('cr-locked');
     let chats = ChatStore.list();
     historyListEl.innerHTML = '';
     if (!chats.length) {
@@ -820,6 +827,34 @@ function mountSidebar(win) {
     });
   }
 
+  // Replaces the truncated placeholder title with a short Claude-generated
+  // one once the first exchange is underway. Best-effort: falls back
+  // silently to the placeholder set in send() if this fails.
+  async function generateTitle(chat, firstMessage) {
+    let title;
+    try {
+      title = await callClaude(
+        [{ role: 'user', content: firstMessage }],
+        'Summarize the subject of this message in 4-5 words for use as a chat title. ' +
+          'Reply with only the title, no punctuation at the end, no quotes.'
+      );
+    } catch (e) {
+      return;
+    }
+    title = title.trim();
+    if (!title) return;
+    // The chat may have been renamed by hand, switched away from, or
+    // deleted while the request was in flight — don't clobber any of that.
+    if (chat.title !== firstMessage && !chat.title.startsWith(firstMessage.slice(0, 40))) return;
+    chat.title = title;
+    if (state.chat === chat) {
+      titleEl.textContent = title;
+      titleWrap.classList.remove('cr-locked');
+    }
+    chat.updatedAt = Date.now();
+    ChatStore.upsert(chat);
+  }
+
   async function send(prefilled) {
     if (!state.chat) return;
     let text = (prefilled !== undefined ? prefilled : textarea.value).trim();
@@ -827,11 +862,13 @@ function mountSidebar(win) {
     textarea.value = '';
     appendMsg('user', text);
     state.chat.messages.push({ role: 'user', content: text });
-    if (!state.chat.title) {
+    let needsTitle = !state.chat.title;
+    if (needsTitle) {
       state.chat.title = text.length > 40 ? text.slice(0, 40) + '\u2026' : text;
       titleEl.textContent = state.chat.title;
     }
     persist();
+    if (needsTitle) generateTitle(state.chat, text);
     let placeholder = appendMsg('assistant', '\u2026');
     try {
       let extraContext = state.getExtraContext ? await state.getExtraContext(text) : '';
