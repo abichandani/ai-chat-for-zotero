@@ -308,6 +308,17 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar .cr-history-item .cr-hi-meta { font-size: 11px; color: #888; }
     #claude-sidebar .cr-history-empty { padding: 12px; color: #888; text-align: center; }
+    #cr-ctxmenu {
+      position: fixed; display: none; z-index: 1000001; background: #fff;
+      border: 1px solid #ccc; border-radius: 6px; padding: 4px 0; min-width: 110px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px;
+      -moz-window-dragging: no-drag;
+    }
+    #cr-ctxmenu .cr-ctx-item { padding: 6px 14px; cursor: pointer; color: #222; }
+    #cr-ctxmenu .cr-ctx-item:hover { background: #eee; }
+    #cr-ctxmenu .cr-ctx-item.disabled { color: #aaa; cursor: default; }
+    #cr-ctxmenu .cr-ctx-item.disabled:hover { background: transparent; }
   `;
   (doc.head || doc.documentElement).appendChild(style);
 }
@@ -388,8 +399,17 @@ function mountSidebar(win) {
     </div>
   `;
 
+  let ctxMenu = doc.createElement('div');
+  ctxMenu.id = 'cr-ctxmenu';
+  ctxMenu.innerHTML = `
+    <div class="cr-ctx-item" data-action="cut">Cut</div>
+    <div class="cr-ctx-item" data-action="copy">Copy</div>
+    <div class="cr-ctx-item" data-action="paste">Paste</div>
+  `;
+
   anchor.appendChild(resizer);
   anchor.appendChild(sidebar);
+  anchor.appendChild(ctxMenu);
 
   let titleEl = sidebar.querySelector('.cr-title');
   let messagesEl = sidebar.querySelector('.cr-messages');
@@ -473,6 +493,91 @@ function mountSidebar(win) {
       }
     }
   }, true);
+
+  function copyToClipboard(text) {
+    Cc['@mozilla.org/widget/clipboardhelper;1']
+      .getService(Ci.nsIClipboardHelper)
+      .copyString(text);
+  }
+
+  function readFromClipboard() {
+    try {
+      let trans = Cc['@mozilla.org/widget/transferable;1'].createInstance(Ci.nsITransferable);
+      trans.init(null);
+      trans.addDataFlavor('text/unicode');
+      Services.clipboard.getData(trans, Services.clipboard.kGlobalClipboard);
+      let str = {};
+      trans.getTransferData('text/unicode', str);
+      if (str.value) {
+        return str.value.QueryInterface(Ci.nsISupportsString).data;
+      }
+    } catch (e) {
+      log('readFromClipboard failed: ' + e.message);
+    }
+    return '';
+  }
+
+  // Right-click context menu for the sidebar (Cut/Copy/Paste). Chat bubbles
+  // are chrome-doc divs with no native context menu wired up (same reason
+  // Ctrl+C needed the manual handler above), and even the textarea doesn't
+  // reliably get Zotero/Firefox's own edit menu in this embedded chrome
+  // context, so this provides one uniformly for both.
+  let ctxTarget = null;
+  function hideCtxMenu() {
+    ctxMenu.style.display = 'none';
+    ctxTarget = null;
+  }
+  function setCtxItemEnabled(action, enabled) {
+    let item = ctxMenu.querySelector(`[data-action="${action}"]`);
+    item.classList.toggle('disabled', !enabled);
+  }
+  sidebar.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    ctxTarget = e.target;
+    let isTextarea = ctxTarget === textarea || ctxTarget.closest('textarea') === textarea;
+    let hasSelection = isTextarea
+      ? textarea.selectionStart !== textarea.selectionEnd
+      : !!doc.getSelection().toString();
+    setCtxItemEnabled('cut', isTextarea && hasSelection);
+    setCtxItemEnabled('copy', hasSelection);
+    setCtxItemEnabled('paste', isTextarea);
+    ctxMenu.style.left = e.clientX + 'px';
+    ctxMenu.style.top = e.clientY + 'px';
+    ctxMenu.style.display = 'block';
+  });
+  doc.addEventListener('mousedown', (e) => {
+    if (ctxMenu.style.display !== 'none' && !ctxMenu.contains(e.target)) hideCtxMenu();
+  });
+  ctxMenu.addEventListener('click', (e) => {
+    let item = e.target.closest('.cr-ctx-item');
+    if (!item || item.classList.contains('disabled')) return;
+    let isTextarea = ctxTarget === textarea || (ctxTarget && ctxTarget.closest && ctxTarget.closest('textarea') === textarea);
+    let action = item.dataset.action;
+    if (action === 'copy') {
+      let sel = isTextarea
+        ? textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)
+        : doc.getSelection().toString();
+      if (sel) copyToClipboard(sel);
+    } else if (action === 'cut' && isTextarea) {
+      let start = textarea.selectionStart, end = textarea.selectionEnd;
+      let sel = textarea.value.slice(start, end);
+      if (sel) {
+        copyToClipboard(sel);
+        textarea.value = textarea.value.slice(0, start) + textarea.value.slice(end);
+        textarea.selectionStart = textarea.selectionEnd = start;
+        textarea.focus();
+      }
+    } else if (action === 'paste' && isTextarea) {
+      let text = readFromClipboard();
+      if (text) {
+        let start = textarea.selectionStart, end = textarea.selectionEnd;
+        textarea.value = textarea.value.slice(0, start) + text + textarea.value.slice(end);
+        textarea.selectionStart = textarea.selectionEnd = start + text.length;
+        textarea.focus();
+      }
+    }
+    hideCtxMenu();
+  });
 
   function renderMessages() {
     messagesEl.innerHTML = '';
