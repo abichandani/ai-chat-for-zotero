@@ -11,3 +11,15 @@ description: Stage and commit unstaged changes, but stop if anything is already 
 4. Push the current branch to its remote tracking branch (`git push`). If it has no upstream yet, set one with `git push -u origin <branch>`. If the push is rejected (remote has diverged), stop and ask the user how to proceed — never force-push without explicit confirmation.
 
 5. Report to the user what was committed (files + commit message/hash) and where it was pushed (branch).
+
+**Multi-line commit messages:** The Bash tool here runs Git Bash, not PowerShell. Do NOT use PowerShell here-string syntax (`git commit -m @'...'@`) — the `@` is passed literally and ends up as the first character of the commit subject. Use a heredoc instead:
+
+```
+git commit -F - <<'MSG'
+Subject line
+
+Body.
+MSG
+```
+
+After committing, check `git log --oneline -1` and amend the message if the subject picked up stray characters. Do not amend or rewrite commits that were already pushed.
