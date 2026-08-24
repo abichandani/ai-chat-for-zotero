@@ -1,12 +1,11 @@
-var PLUGIN_ID = 'claude-reader@hitesh.local';
+var PLUGIN_ID = 'ai-chat@hitesh.local';
 var rootURI;
 
-const PREF_KEY = 'extensions.claudereader.apiKey';
-const PREF_MODEL = 'extensions.claudereader.model';
-const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const PREF_PREFIX = 'extensions.aichat';
+const PREF_PROVIDER = PREF_PREFIX + '.provider';
 
 function log(msg) {
-  try { Zotero.debug('[ClaudeReader] ' + msg); } catch (e) { /* Zotero not ready yet */ }
+  try { Zotero.debug('[AIChat] ' + msg); } catch (e) { /* Zotero not ready yet */ }
 }
 
 function getMainDoc() {
@@ -14,36 +13,78 @@ function getMainDoc() {
   return win.document;
 }
 
-// ---------- Claude API ----------
+// ---------- Providers ----------
+// Everything provider-specific lives in this registry: the wire format of a
+// chat request, how a reply is unwrapped, and where the user gets a key.
+// Adding OpenAI/Gemini/etc. later means adding an entry here — nothing
+// outside this section knows which model is answering.
 
-async function callClaude(messages, system) {
-  let apiKey = Zotero.Prefs.get(PREF_KEY, true);
+const PROVIDERS = {
+  anthropic: {
+    label: 'Claude',
+    defaultModel: 'claude-sonnet-4-6',
+    keyLabel: 'Anthropic API key (not your Claude.ai login)',
+    keyHelp: 'Get one at console.anthropic.com → Settings → API Keys',
+    request(apiKey, model, messages, system) {
+      let body = { model, max_tokens: 1024, messages };
+      if (system) body.system = system;
+      return {
+        url: 'https://api.anthropic.com/v1/messages',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body,
+      };
+    },
+    parseReply(data) {
+      if (!data || !data.content) return null;
+      return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    },
+  },
+};
+
+const DEFAULT_PROVIDER = 'anthropic';
+
+function activeProviderId() {
+  let id = Zotero.Prefs.get(PREF_PROVIDER, true);
+  return (id && PROVIDERS[id]) ? id : DEFAULT_PROVIDER;
+}
+
+function activeProvider() {
+  return PROVIDERS[activeProviderId()];
+}
+
+// Keys and models are stored per provider so switching back and forth
+// doesn't lose either one.
+function providerPref(id, name) {
+  return PREF_PREFIX + '.' + id + '.' + name;
+}
+
+// ---------- Chat API ----------
+
+async function callAI(messages, system) {
+  let id = activeProviderId();
+  let provider = PROVIDERS[id];
+  let apiKey = Zotero.Prefs.get(providerPref(id, 'apiKey'), true);
   if (!apiKey) {
-    throw new Error('No Claude API key set. Use Tools \u2192 Set Claude API Key\u2026');
+    throw new Error('No ' + provider.label + ' API key set. Use Tools → AI Chat: Set API Key…');
   }
-  let model = Zotero.Prefs.get(PREF_MODEL, true) || DEFAULT_MODEL;
-  let body = {
-    model,
-    max_tokens: 1024,
-    messages,
-  };
-  if (system) body.system = system;
+  let model = Zotero.Prefs.get(providerPref(id, 'model'), true) || provider.defaultModel;
+  let req = provider.request(apiKey, model, messages, system);
 
   let resp;
   try {
-    resp = await Zotero.HTTP.request('POST', 'https://api.anthropic.com/v1/messages', {
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify(body),
+    resp = await Zotero.HTTP.request('POST', req.url, {
+      headers: req.headers,
+      body: JSON.stringify(req.body),
       responseType: 'json',
     });
   } catch (e) {
     // Zotero.HTTP.request throws a generic status-code error; the actual
-    // reason from Anthropic's API is in the response body, so surface that
-    // instead of just "failed with status code 400".
+    // reason from the provider's API is in the response body, so surface
+    // that instead of just "failed with status code 400".
     let detail = '';
     try {
       // With responseType: 'json', xmlhttp.responseText throws
@@ -54,11 +95,11 @@ async function callClaude(messages, system) {
     throw new Error(detail || e.message || String(e));
   }
 
-  let data = resp.response;
-  if (data && data.content) {
-    return data.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+  let reply = provider.parseReply(resp.response);
+  if (reply === null || reply === undefined) {
+    throw new Error('Unexpected response from ' + provider.label + ' API: ' + JSON.stringify(resp.response));
   }
-  throw new Error('Unexpected response from Claude API: ' + JSON.stringify(data));
+  return reply;
 }
 
 // Full text of the PDF/HTML currently open in the reader.
@@ -131,7 +172,7 @@ async function searchLibrary(query, limit = 6) {
 
 // ---------- Minimal markdown rendering ----------
 // No bundled markdown library is available in a bootstrap plugin, so this
-// handles just the subset Claude actually produces in chat replies: headers,
+// handles just the subset models actually produce in chat replies: headers,
 // bold/italic, inline code, fenced code blocks, links, and (un)ordered lists.
 // Everything is HTML-escaped first so raw model output can never inject markup.
 
@@ -261,7 +302,7 @@ function renderMarkdown(text) {
 // Persisted as a single JSON blob in prefs (bootstrap plugins have no
 // bundled DB access). Capped so the pref blob can't grow unbounded.
 
-const PREF_CHATS = 'extensions.claudereader.chats';
+const PREF_CHATS = PREF_PREFIX + '.chats';
 const MAX_STORED_CHATS = 50;
 
 const ChatStore = {
@@ -300,202 +341,202 @@ function makeChatId() {
 
 // ---------- Docked sidebar UI (reused for both PDF-context and library chat) ----------
 
-const PREF_SIDEBAR_WIDTH = 'extensions.claudereader.sidebarWidth';
+const PREF_SIDEBAR_WIDTH = PREF_PREFIX + '.sidebarWidth';
 const DEFAULT_SIDEBAR_WIDTH = 340;
 const sidebarApis = new WeakMap(); // main window -> sidebar API, one per window
 
 function injectSidebarStyle(doc) {
-  if (doc.getElementById('claude-sidebar-style')) return;
+  if (doc.getElementById('ai-chat-sidebar-style')) return;
   let style = doc.createElement('style');
-  style.id = 'claude-sidebar-style';
+  style.id = 'ai-chat-sidebar-style';
   style.textContent = `
-    #claude-sidebar, #cr-ctxmenu {
-      --cr-bg: #fff; --cr-bg-alt: #f9f9f9; --cr-bg-hover: #e2e2e2; --cr-messages-bg: #fff;
-      --cr-border: #cdcdcd; --cr-border-alt: #dadada; --cr-border-input: #d5d5d5;
-      --cr-text: #222; --cr-text-alt: #333; --cr-text-muted: #444; --cr-text-faint: #888;
-      --cr-resizer-hover: #bcd6f7;
-      --cr-bubble-user: var(--cr-messages-bg); --cr-bubble-assistant: #d7eaff;
-      --cr-code-bg: #eef1ee; --cr-link: #2563a8;
-      --cr-input-bg: #fafafa; --cr-send-hover: #eee;
-      --cr-history-odd: #f4f4f4; --cr-history-even: #e3e3e3; --cr-history-hover: #d3d3d3;
-      --cr-menu-border: #ccc; --cr-menu-shadow: rgba(0,0,0,0.2); --cr-menu-disabled: #aaa;
+    #ai-chat-sidebar, #aic-ctxmenu {
+      --aic-bg: #fff; --aic-bg-alt: #f9f9f9; --aic-bg-hover: #e2e2e2; --aic-messages-bg: #fff;
+      --aic-border: #cdcdcd; --aic-border-alt: #dadada; --aic-border-input: #d5d5d5;
+      --aic-text: #222; --aic-text-alt: #333; --aic-text-muted: #444; --aic-text-faint: #888;
+      --aic-resizer-hover: #bcd6f7;
+      --aic-bubble-user: var(--aic-messages-bg); --aic-bubble-assistant: #d7eaff;
+      --aic-code-bg: #eef1ee; --aic-link: #2563a8;
+      --aic-input-bg: #fafafa; --aic-send-hover: #eee;
+      --aic-history-odd: #f4f4f4; --aic-history-even: #e3e3e3; --aic-history-hover: #d3d3d3;
+      --aic-menu-border: #ccc; --aic-menu-shadow: rgba(0,0,0,0.2); --aic-menu-disabled: #aaa;
     }
     @media (prefers-color-scheme: dark) {
-      #claude-sidebar, #cr-ctxmenu {
-        --cr-bg: #2b2b2b; --cr-bg-alt: #272727; --cr-bg-hover: #3f3f3f; --cr-messages-bg: #323232;
-        --cr-border: #4a4a4a; --cr-border-alt: #454545; --cr-border-input: #454545;
-        --cr-text: #e8e8e8; --cr-text-alt: #dcdcdc; --cr-text-muted: #cfcfcf; --cr-text-faint: #9a9a9a;
-        --cr-resizer-hover: #3a5a80;
-        --cr-bubble-user: #262626; --cr-bubble-assistant: #1f3b57;
-        --cr-code-bg: #383838; --cr-link: #6ba6e8;
-        --cr-input-bg: #262626; --cr-send-hover: #3a3a3a;
-        --cr-history-odd: #303030; --cr-history-even: #383838; --cr-history-hover: #444;
-        --cr-menu-border: #4a4a4a; --cr-menu-shadow: rgba(0,0,0,0.5); --cr-menu-disabled: #777;
+      #ai-chat-sidebar, #aic-ctxmenu {
+        --aic-bg: #2b2b2b; --aic-bg-alt: #272727; --aic-bg-hover: #3f3f3f; --aic-messages-bg: #323232;
+        --aic-border: #4a4a4a; --aic-border-alt: #454545; --aic-border-input: #454545;
+        --aic-text: #e8e8e8; --aic-text-alt: #dcdcdc; --aic-text-muted: #cfcfcf; --aic-text-faint: #9a9a9a;
+        --aic-resizer-hover: #3a5a80;
+        --aic-bubble-user: #262626; --aic-bubble-assistant: #1f3b57;
+        --aic-code-bg: #383838; --aic-link: #6ba6e8;
+        --aic-input-bg: #262626; --aic-send-hover: #3a3a3a;
+        --aic-history-odd: #303030; --aic-history-even: #383838; --aic-history-hover: #444;
+        --aic-menu-border: #4a4a4a; --aic-menu-shadow: rgba(0,0,0,0.5); --aic-menu-disabled: #777;
       }
     }
-    #claude-sidebar-resizer {
+    #ai-chat-sidebar-resizer {
       position: fixed; top: 0; bottom: 0; width: 5px; cursor: col-resize;
       background: transparent; z-index: 1000000; -moz-window-dragging: no-drag;
     }
-    #claude-sidebar-resizer:hover { background: var(--cr-resizer-hover); }
-    #claude-sidebar {
+    #ai-chat-sidebar-resizer:hover { background: var(--aic-resizer-hover); }
+    #ai-chat-sidebar {
       position: fixed; top: 0; right: 0; bottom: 0;
       display: flex; flex-direction: column;
-      border-left: 1px solid var(--cr-border); background: var(--cr-bg); color: var(--cr-text);
+      border-left: 1px solid var(--aic-border); background: var(--aic-bg); color: var(--aic-text);
       font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px;
       min-width: 240px; max-width: 70vw; z-index: 999999;
       -moz-window-dragging: no-drag;
     }
-    #claude-sidebar.cr-hidden, #claude-sidebar-resizer.cr-hidden { display: none; }
-    #claude-sidebar .cr-header {
-      padding: 6px 8px; background: var(--cr-bg-alt);
-      border-top: 1px solid var(--cr-border-alt); border-bottom: 1px solid var(--cr-border-alt); color: var(--cr-text-alt);
+    #ai-chat-sidebar.aic-hidden, #ai-chat-sidebar-resizer.aic-hidden { display: none; }
+    #ai-chat-sidebar .aic-header {
+      padding: 6px 8px; background: var(--aic-bg-alt);
+      border-top: 1px solid var(--aic-border-alt); border-bottom: 1px solid var(--aic-border-alt); color: var(--aic-text-alt);
       display: flex; justify-content: space-between; align-items: center; gap: 6px;
     }
-    #claude-sidebar .cr-title-wrap {
+    #ai-chat-sidebar .aic-title-wrap {
       display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden;
       padding: 3px 6px; border-radius: 5px; cursor: pointer;
     }
-    #claude-sidebar .cr-title-wrap.cr-editing { flex: 1; }
-    #claude-sidebar .cr-title-wrap:hover { background: var(--cr-bg-hover); }
-    #claude-sidebar .cr-title {
+    #ai-chat-sidebar .aic-title-wrap.aic-editing { flex: 1; }
+    #ai-chat-sidebar .aic-title-wrap:hover { background: var(--aic-bg-hover); }
+    #ai-chat-sidebar .aic-title {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-weight: 600;
     }
-    #claude-sidebar .cr-title-edit-icon {
-      display: none; font-size: 11px; color: var(--cr-text-muted); flex-shrink: 0;
+    #ai-chat-sidebar .aic-title-edit-icon {
+      display: none; font-size: 11px; color: var(--aic-text-muted); flex-shrink: 0;
     }
-    #claude-sidebar .cr-title-wrap:hover .cr-title-edit-icon { display: inline; }
-    #claude-sidebar .cr-title-wrap.cr-locked { cursor: default; }
-    #claude-sidebar .cr-title-wrap.cr-locked:hover { background: none; }
-    #claude-sidebar .cr-title-wrap.cr-locked:hover .cr-title-edit-icon { display: none; }
-    #claude-sidebar .cr-title-input {
-      flex: 1; min-width: 0; font: inherit; font-weight: 600; color: var(--cr-text);
-      background: var(--cr-bg); border: 1px solid #32728e; border-radius: 4px;
+    #ai-chat-sidebar .aic-title-wrap:hover .aic-title-edit-icon { display: inline; }
+    #ai-chat-sidebar .aic-title-wrap.aic-locked { cursor: default; }
+    #ai-chat-sidebar .aic-title-wrap.aic-locked:hover { background: none; }
+    #ai-chat-sidebar .aic-title-wrap.aic-locked:hover .aic-title-edit-icon { display: none; }
+    #ai-chat-sidebar .aic-title-input {
+      flex: 1; min-width: 0; font: inherit; font-weight: 600; color: var(--aic-text);
+      background: var(--aic-bg); border: 1px solid #32728e; border-radius: 4px;
       padding: 1px 5px; outline: none;
       box-shadow: 0 0 0 2px rgba(50, 114, 142, 0.25);
     }
-    #claude-sidebar .cr-header-btns { display: flex; gap: 2px; flex-shrink: 0; }
-    #claude-sidebar .cr-header-btns [role="button"] {
-      cursor: pointer; font-size: 18px; line-height: 1; padding: 5px 10px; border-radius: 5px; color: var(--cr-text-muted);
+    #ai-chat-sidebar .aic-header-btns { display: flex; gap: 2px; flex-shrink: 0; }
+    #ai-chat-sidebar .aic-header-btns [role="button"] {
+      cursor: pointer; font-size: 18px; line-height: 1; padding: 5px 10px; border-radius: 5px; color: var(--aic-text-muted);
       display: flex; align-items: center; justify-content: center;
     }
-    #claude-sidebar .cr-header-btns .cr-close { font-size: 14px; }
-    #claude-sidebar .cr-header-btns .cr-new svg { width: 21px; height: 21px; display: block; }
-    #claude-sidebar .cr-header-btns .cr-history svg { width: 18px; height: 18px; display: block; }
-    #claude-sidebar .cr-header-btns [role="button"]:hover { background: var(--cr-bg-hover); }
-    #claude-sidebar .cr-messages {
+    #ai-chat-sidebar .aic-header-btns .aic-close { font-size: 14px; }
+    #ai-chat-sidebar .aic-header-btns .aic-new svg { width: 21px; height: 21px; display: block; }
+    #ai-chat-sidebar .aic-header-btns .aic-history svg { width: 18px; height: 18px; display: block; }
+    #ai-chat-sidebar .aic-header-btns [role="button"]:hover { background: var(--aic-bg-hover); }
+    #ai-chat-sidebar .aic-messages {
       flex: 1; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 13px;
-      background: var(--cr-messages-bg);
+      background: var(--aic-messages-bg);
     }
-    #claude-sidebar .cr-msg {
+    #ai-chat-sidebar .aic-msg {
       padding: 6px 9px; border-radius: 8px; white-space: pre-wrap; line-height: 1.4;
       user-select: text !important; -moz-user-select: text !important; cursor: text;
       position: relative;
     }
-    #claude-sidebar .cr-msg.user { background: var(--cr-bubble-user); align-self: flex-end; max-width: 85%; border: 1px solid var(--cr-border); }
-    #claude-sidebar .cr-msg.cr-collapsible { padding-bottom: 24px; }
-    #claude-sidebar .cr-msg.cr-collapsed .cr-msg-body { max-height: var(--cr-collapse-max); overflow: hidden; }
-    #claude-sidebar .cr-msg.cr-collapsed::after {
+    #ai-chat-sidebar .aic-msg.user { background: var(--aic-bubble-user); align-self: flex-end; max-width: 85%; border: 1px solid var(--aic-border); }
+    #ai-chat-sidebar .aic-msg.aic-collapsible { padding-bottom: 24px; }
+    #ai-chat-sidebar .aic-msg.aic-collapsed .aic-msg-body { max-height: var(--aic-collapse-max); overflow: hidden; }
+    #ai-chat-sidebar .aic-msg.aic-collapsed::after {
       content: ''; position: absolute; left: 0; right: 0; top: 50%; bottom: 0;
-      background: linear-gradient(to bottom, transparent, var(--cr-bubble-user));
+      background: linear-gradient(to bottom, transparent, var(--aic-bubble-user));
       opacity: 0.8; pointer-events: none;
     }
-    #claude-sidebar .cr-msg-toggle {
+    #ai-chat-sidebar .aic-msg-toggle {
       position: absolute; right: 9px; bottom: 5px; z-index: 1; font-size: 11px; font-weight: 600;
-      color: var(--cr-text-muted); cursor: pointer; user-select: none; -moz-user-select: none;
+      color: var(--aic-text-muted); cursor: pointer; user-select: none; -moz-user-select: none;
       white-space: nowrap;
     }
-    #claude-sidebar .cr-msg-toggle:hover { text-decoration: underline; }
-    #claude-sidebar .cr-msg.assistant { background: var(--cr-bubble-assistant); align-self: flex-start; max-width: 95%; }
-    #claude-sidebar .cr-msg.assistant p { margin: 0 0 6px 0; }
-    #claude-sidebar .cr-msg.assistant p:last-child { margin-bottom: 0; }
-    #claude-sidebar .cr-msg.assistant ul, #claude-sidebar .cr-msg.assistant ol { margin: 4px 0; padding-left: 20px; }
-    #claude-sidebar .cr-msg.assistant pre {
-      background: var(--cr-code-bg); border-radius: 5px; padding: 6px 8px; overflow-x: auto;
+    #ai-chat-sidebar .aic-msg-toggle:hover { text-decoration: underline; }
+    #ai-chat-sidebar .aic-msg.assistant { background: var(--aic-bubble-assistant); align-self: flex-start; max-width: 95%; }
+    #ai-chat-sidebar .aic-msg.assistant p { margin: 0 0 6px 0; }
+    #ai-chat-sidebar .aic-msg.assistant p:last-child { margin-bottom: 0; }
+    #ai-chat-sidebar .aic-msg.assistant ul, #ai-chat-sidebar .aic-msg.assistant ol { margin: 4px 0; padding-left: 20px; }
+    #ai-chat-sidebar .aic-msg.assistant pre {
+      background: var(--aic-code-bg); border-radius: 5px; padding: 6px 8px; overflow-x: auto;
       white-space: pre; margin: 4px 0;
     }
-    #claude-sidebar .cr-msg.assistant code {
-      background: var(--cr-code-bg); border-radius: 3px; padding: 1px 4px; font-family: Menlo, Consolas, monospace; font-size: 11.5px;
+    #ai-chat-sidebar .aic-msg.assistant code {
+      background: var(--aic-code-bg); border-radius: 3px; padding: 1px 4px; font-family: Menlo, Consolas, monospace; font-size: 11.5px;
     }
-    #claude-sidebar .cr-msg.assistant pre code { background: transparent; padding: 0; }
-    #claude-sidebar .cr-msg.assistant strong { font-weight: 700; }
-    #claude-sidebar .cr-msg.assistant h1, #claude-sidebar .cr-msg.assistant h2,
-    #claude-sidebar .cr-msg.assistant h3, #claude-sidebar .cr-msg.assistant h4,
-    #claude-sidebar .cr-msg.assistant h5, #claude-sidebar .cr-msg.assistant h6 {
+    #ai-chat-sidebar .aic-msg.assistant pre code { background: transparent; padding: 0; }
+    #ai-chat-sidebar .aic-msg.assistant strong { font-weight: 700; }
+    #ai-chat-sidebar .aic-msg.assistant h1, #ai-chat-sidebar .aic-msg.assistant h2,
+    #ai-chat-sidebar .aic-msg.assistant h3, #ai-chat-sidebar .aic-msg.assistant h4,
+    #ai-chat-sidebar .aic-msg.assistant h5, #ai-chat-sidebar .aic-msg.assistant h6 {
       margin: 10px 0 4px 0; font-weight: 700; line-height: 1.25;
     }
-    #claude-sidebar .cr-msg.assistant h1 { font-size: 1.45em; }
-    #claude-sidebar .cr-msg.assistant h2 { font-size: 1.25em; }
-    #claude-sidebar .cr-msg.assistant h3 { font-size: 1.1em; }
-    #claude-sidebar .cr-msg.assistant h4,
-    #claude-sidebar .cr-msg.assistant h5,
-    #claude-sidebar .cr-msg.assistant h6 { font-size: 1em; }
-    #claude-sidebar .cr-msg.assistant :first-child { margin-top: 0; }
-    #claude-sidebar .cr-msg.assistant hr {
-      border: none; border-top: 1px solid var(--cr-border); margin: 10px 0;
+    #ai-chat-sidebar .aic-msg.assistant h1 { font-size: 1.45em; }
+    #ai-chat-sidebar .aic-msg.assistant h2 { font-size: 1.25em; }
+    #ai-chat-sidebar .aic-msg.assistant h3 { font-size: 1.1em; }
+    #ai-chat-sidebar .aic-msg.assistant h4,
+    #ai-chat-sidebar .aic-msg.assistant h5,
+    #ai-chat-sidebar .aic-msg.assistant h6 { font-size: 1em; }
+    #ai-chat-sidebar .aic-msg.assistant :first-child { margin-top: 0; }
+    #ai-chat-sidebar .aic-msg.assistant hr {
+      border: none; border-top: 1px solid var(--aic-border); margin: 10px 0;
     }
-    #claude-sidebar .cr-msg.assistant table {
+    #ai-chat-sidebar .aic-msg.assistant table {
       border-collapse: collapse; margin: 6px 0; font-size: 0.95em; display: block;
       overflow-x: auto; max-width: 100%;
     }
-    #claude-sidebar .cr-msg.assistant th, #claude-sidebar .cr-msg.assistant td {
-      border: 1px solid var(--cr-border); padding: 3px 7px; text-align: left;
+    #ai-chat-sidebar .aic-msg.assistant th, #ai-chat-sidebar .aic-msg.assistant td {
+      border: 1px solid var(--aic-border); padding: 3px 7px; text-align: left;
       white-space: normal; vertical-align: top;
     }
-    #claude-sidebar .cr-msg.assistant th { background: var(--cr-code-bg); font-weight: 700; }
-    #claude-sidebar .cr-msg.assistant a { color: var(--cr-link); }
-    #claude-sidebar .cr-input-area {
-      flex-shrink: 0; padding: 0 8px 8px 8px; background: var(--cr-messages-bg);
+    #ai-chat-sidebar .aic-msg.assistant th { background: var(--aic-code-bg); font-weight: 700; }
+    #ai-chat-sidebar .aic-msg.assistant a { color: var(--aic-link); }
+    #ai-chat-sidebar .aic-input-area {
+      flex-shrink: 0; padding: 0 8px 8px 8px; background: var(--aic-messages-bg);
     }
-    #claude-sidebar .cr-input-row {
-      display: flex; flex-direction: column; flex-shrink: 0; background: var(--cr-input-bg);
-      border: 1px solid var(--cr-border-input); border-radius: 10px;
+    #ai-chat-sidebar .aic-input-row {
+      display: flex; flex-direction: column; flex-shrink: 0; background: var(--aic-input-bg);
+      border: 1px solid var(--aic-border-input); border-radius: 10px;
       overflow: hidden; transition: border-color 0.15s ease, box-shadow 0.15s ease;
     }
-    #claude-sidebar .cr-input-row:focus-within {
+    #ai-chat-sidebar .aic-input-row:focus-within {
       border-color: #32728e;
       box-shadow: 0 0 0 3px rgba(50, 114, 142, 0.25), 0 0 12px rgba(50, 114, 142, 0.35);
     }
-    #claude-sidebar textarea {
+    #ai-chat-sidebar textarea {
       width: 100%; box-sizing: border-box; border: none; background: transparent;
       padding: 8px; resize: none; height: 44px; overflow-y: auto;
-      font-family: inherit; font-size: 12.5px; color: var(--cr-text);
+      font-family: inherit; font-size: 12.5px; color: var(--aic-text);
     }
-    #claude-sidebar textarea:focus { outline: none; }
-    #claude-sidebar .cr-input-actions {
+    #ai-chat-sidebar textarea:focus { outline: none; }
+    #ai-chat-sidebar .aic-input-actions {
       display: flex; justify-content: flex-end; align-items: center; flex-shrink: 0;
-      padding: 6px 8px; border-top: 1px solid var(--cr-border-input);
+      padding: 6px 8px; border-top: 1px solid var(--aic-border-input);
     }
-    #claude-sidebar .cr-send {
-      border: 1px solid var(--cr-border-input); border-radius: 6px; background: transparent;
-      color: var(--cr-text-muted); height: 26px; padding: 0 14px; box-sizing: border-box;
+    #ai-chat-sidebar .aic-send {
+      border: 1px solid var(--aic-border-input); border-radius: 6px; background: transparent;
+      color: var(--aic-text-muted); height: 26px; padding: 0 14px; box-sizing: border-box;
       cursor: pointer; font-weight: 600; flex-shrink: 0;
       display: flex; align-items: center; justify-content: center;
     }
-    #claude-sidebar .cr-send:hover { background: var(--cr-send-hover); }
-    #claude-sidebar .cr-history-list { flex: 1; overflow-y: auto; padding: 6px; }
-    #claude-sidebar .cr-history-item {
+    #ai-chat-sidebar .aic-send:hover { background: var(--aic-send-hover); }
+    #ai-chat-sidebar .aic-history-list { flex: 1; overflow-y: auto; padding: 6px; }
+    #ai-chat-sidebar .aic-history-item {
       padding: 8px; border-radius: 6px; cursor: pointer; margin-bottom: 2px;
     }
-    #claude-sidebar .cr-history-item:nth-child(odd) { background: var(--cr-history-odd); }
-    #claude-sidebar .cr-history-item:nth-child(even) { background: var(--cr-history-even); }
-    #claude-sidebar .cr-history-item:hover { background: var(--cr-history-hover); }
-    #claude-sidebar .cr-history-item .cr-hi-title {
-      font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--cr-text);
+    #ai-chat-sidebar .aic-history-item:nth-child(odd) { background: var(--aic-history-odd); }
+    #ai-chat-sidebar .aic-history-item:nth-child(even) { background: var(--aic-history-even); }
+    #ai-chat-sidebar .aic-history-item:hover { background: var(--aic-history-hover); }
+    #ai-chat-sidebar .aic-history-item .aic-hi-title {
+      font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--aic-text);
     }
-    #claude-sidebar .cr-history-item .cr-hi-meta { font-size: 11px; color: var(--cr-text-faint); }
-    #claude-sidebar .cr-history-empty { padding: 12px; color: var(--cr-text-faint); text-align: center; }
-    #cr-ctxmenu {
-      position: fixed; display: none; z-index: 1000001; background: var(--cr-bg);
-      border: 1px solid var(--cr-menu-border); border-radius: 6px; padding: 4px 0; min-width: 110px;
-      box-shadow: 0 2px 8px var(--cr-menu-shadow);
+    #ai-chat-sidebar .aic-history-item .aic-hi-meta { font-size: 11px; color: var(--aic-text-faint); }
+    #ai-chat-sidebar .aic-history-empty { padding: 12px; color: var(--aic-text-faint); text-align: center; }
+    #aic-ctxmenu {
+      position: fixed; display: none; z-index: 1000001; background: var(--aic-bg);
+      border: 1px solid var(--aic-menu-border); border-radius: 6px; padding: 4px 0; min-width: 110px;
+      box-shadow: 0 2px 8px var(--aic-menu-shadow);
       font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; font-size: 12.5px;
       -moz-window-dragging: no-drag;
     }
-    #cr-ctxmenu .cr-ctx-item { padding: 6px 14px; cursor: pointer; color: var(--cr-text); }
-    #cr-ctxmenu .cr-ctx-item:hover { background: var(--cr-bg-hover); }
-    #cr-ctxmenu .cr-ctx-item.disabled { color: var(--cr-menu-disabled); cursor: default; }
-    #cr-ctxmenu .cr-ctx-item.disabled:hover { background: transparent; }
+    #aic-ctxmenu .aic-ctx-item { padding: 6px 14px; cursor: pointer; color: var(--aic-text); }
+    #aic-ctxmenu .aic-ctx-item:hover { background: var(--aic-bg-hover); }
+    #aic-ctxmenu .aic-ctx-item.disabled { color: var(--aic-menu-disabled); cursor: default; }
+    #aic-ctxmenu .aic-ctx-item.disabled:hover { background: transparent; }
   `;
   (doc.head || doc.documentElement).appendChild(style);
 }
@@ -536,9 +577,9 @@ function mountSidebar(win) {
   log('mountSidebar: creating new sidebar for ' + win.location.href);
 
   let doc = win.document;
-  let preexisting = doc.querySelectorAll('#claude-sidebar').length;
+  let preexisting = doc.querySelectorAll('#ai-chat-sidebar').length;
   if (preexisting > 0) {
-    log('mountSidebar: WARNING ' + preexisting + ' stale #claude-sidebar node(s) already in DOM');
+    log('mountSidebar: WARNING ' + preexisting + ' stale #ai-chat-sidebar node(s) already in DOM');
   }
   injectSidebarStyle(doc);
   // Appended directly to the document root -- NOT spliced into Zotero's own
@@ -550,65 +591,65 @@ function mountSidebar(win) {
   let anchor = doc.body || doc.documentElement;
 
   let resizer = doc.createElement('div');
-  resizer.id = 'claude-sidebar-resizer';
-  resizer.className = 'cr-hidden';
+  resizer.id = 'ai-chat-sidebar-resizer';
+  resizer.className = 'aic-hidden';
 
   let sidebar = doc.createElement('div');
-  sidebar.id = 'claude-sidebar';
-  sidebar.className = 'cr-hidden';
+  sidebar.id = 'ai-chat-sidebar';
+  sidebar.className = 'aic-hidden';
   let savedWidth = parseInt(Zotero.Prefs.get(PREF_SIDEBAR_WIDTH, true), 10) || DEFAULT_SIDEBAR_WIDTH;
   sidebar.style.width = savedWidth + 'px';
   resizer.style.right = savedWidth + 'px';
   sidebar.innerHTML = `
-    <div class="cr-header">
-      <div class="cr-title-wrap" tabindex="0" role="button" title="Rename chat">
-        <span class="cr-title">Claude</span>
-        <span class="cr-title-edit-icon">✎</span>
+    <div class="aic-header">
+      <div class="aic-title-wrap" tabindex="0" role="button" title="Rename chat">
+        <span class="aic-title">AI Chat</span>
+        <span class="aic-title-edit-icon">✎</span>
       </div>
-      <div class="cr-header-btns">
-        <div class="cr-new" tabindex="0" role="button" title="New chat"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.42h6.08v7.08h-2.41l-.05 2.03-1.45-2.03H4V8.5"/><path d="M2.4 4.5h3.2M4 2.9v3.2"/></svg></div>
-        <div class="cr-history" tabindex="0" role="button" title="History"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.4V8l2.6 1.6"/></svg></div>
-        <div class="cr-close" tabindex="0" role="button" title="Hide sidebar">\u2715</div>
+      <div class="aic-header-btns">
+        <div class="aic-new" tabindex="0" role="button" title="New chat"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4.42h6.08v7.08h-2.41l-.05 2.03-1.45-2.03H4V8.5"/><path d="M2.4 4.5h3.2M4 2.9v3.2"/></svg></div>
+        <div class="aic-history" tabindex="0" role="button" title="History"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.4V8l2.6 1.6"/></svg></div>
+        <div class="aic-close" tabindex="0" role="button" title="Hide sidebar">\u2715</div>
       </div>
     </div>
-    <div class="cr-messages"></div>
-    <div class="cr-history-list" style="display:none"></div>
-    <div class="cr-input-area">
-      <div class="cr-input-row">
-        <textarea placeholder="Ask Claude\u2026"></textarea>
-        <div class="cr-input-actions">
-          <div class="cr-send" tabindex="0" role="button">Send</div>
+    <div class="aic-messages"></div>
+    <div class="aic-history-list" style="display:none"></div>
+    <div class="aic-input-area">
+      <div class="aic-input-row">
+        <textarea placeholder="Ask anything\u2026"></textarea>
+        <div class="aic-input-actions">
+          <div class="aic-send" tabindex="0" role="button">Send</div>
         </div>
       </div>
     </div>
   `;
 
   let ctxMenu = doc.createElement('div');
-  ctxMenu.id = 'cr-ctxmenu';
+  ctxMenu.id = 'aic-ctxmenu';
   ctxMenu.innerHTML = `
-    <div class="cr-ctx-item" data-action="cut">Cut</div>
-    <div class="cr-ctx-item" data-action="copy">Copy</div>
-    <div class="cr-ctx-item" data-action="paste">Paste</div>
+    <div class="aic-ctx-item" data-action="cut">Cut</div>
+    <div class="aic-ctx-item" data-action="copy">Copy</div>
+    <div class="aic-ctx-item" data-action="paste">Paste</div>
   `;
 
   anchor.appendChild(resizer);
   anchor.appendChild(sidebar);
   anchor.appendChild(ctxMenu);
 
-  let titleWrap = sidebar.querySelector('.cr-title-wrap');
-  let titleEl = sidebar.querySelector('.cr-title');
+  let titleWrap = sidebar.querySelector('.aic-title-wrap');
+  let titleEl = sidebar.querySelector('.aic-title');
   let titleInput = doc.createElement('input');
-  titleInput.className = 'cr-title-input';
+  titleInput.className = 'aic-title-input';
   titleInput.style.display = 'none';
-  titleWrap.insertBefore(titleInput, sidebar.querySelector('.cr-title-edit-icon'));
-  let messagesEl = sidebar.querySelector('.cr-messages');
-  let historyListEl = sidebar.querySelector('.cr-history-list');
+  titleWrap.insertBefore(titleInput, sidebar.querySelector('.aic-title-edit-icon'));
+  let messagesEl = sidebar.querySelector('.aic-messages');
+  let historyListEl = sidebar.querySelector('.aic-history-list');
   let textarea = sidebar.querySelector('textarea');
-  let sendBtn = sidebar.querySelector('.cr-send');
-  let closeBtn = sidebar.querySelector('.cr-close');
-  let newBtn = sidebar.querySelector('.cr-new');
-  let historyBtn = sidebar.querySelector('.cr-history');
-  let inputArea = sidebar.querySelector('.cr-input-area');
+  let sendBtn = sidebar.querySelector('.aic-send');
+  let closeBtn = sidebar.querySelector('.aic-close');
+  let newBtn = sidebar.querySelector('.aic-new');
+  let historyBtn = sidebar.querySelector('.aic-history');
+  let inputArea = sidebar.querySelector('.aic-input-area');
 
   let state = { chat: null, system: '', getExtraContext: null };
 
@@ -651,24 +692,24 @@ function mountSidebar(win) {
     let top = getContentTopOffset(doc);
     sidebar.style.top = top + 'px';
     resizer.style.top = top + 'px';
-    sidebar.classList.remove('cr-hidden');
-    resizer.classList.remove('cr-hidden');
+    sidebar.classList.remove('aic-hidden');
+    resizer.classList.remove('aic-hidden');
     applyContentPush();
   }
   function hide() {
-    sidebar.classList.add('cr-hidden');
-    resizer.classList.add('cr-hidden');
+    sidebar.classList.add('aic-hidden');
+    resizer.classList.add('aic-hidden');
     clearContentPush();
   }
   function toggle() {
-    if (sidebar.classList.contains('cr-hidden')) show(); else hide();
+    if (sidebar.classList.contains('aic-hidden')) show(); else hide();
   }
 
   // Chat bubbles live in the chrome document (not a <browser> content area),
   // so Gecko has no cmd_copy controller wired up for their selection --
   // Ctrl+C is silently swallowed. Copy the selection to the clipboard
   // ourselves. Listen on the whole sidebar (capture phase) rather than just
-  // .cr-messages, since a mouse-drag selection doesn't reliably move
+  // .aic-messages, since a mouse-drag selection doesn't reliably move
   // keyboard focus there.
   messagesEl.setAttribute('tabindex', '0');
   sidebar.addEventListener('keydown', (e) => {
@@ -776,15 +817,15 @@ function mountSidebar(win) {
     if (ctxMenu.style.display === 'block' && !ctxMenu.contains(e.target)) hideCtxMenu();
   });
   ctxMenu.addEventListener('click', (e) => {
-    let item = e.target.closest('.cr-ctx-item');
+    let item = e.target.closest('.aic-ctx-item');
     if (!item || item.classList.contains('disabled')) return;
     let isTextarea = ctxTarget === textarea || (ctxTarget && ctxTarget.closest && ctxTarget.closest('textarea') === textarea);
     let action = item.dataset.action;
     if (action === 'copy') {
-      // For a message bubble, copy the raw text Claude sent (with markdown
+      // For a message bubble, copy the raw text the model sent (with markdown
       // syntax intact) rather than the rendered HTML's plain text -- the
       // rendered text loses the "**"/"`"/etc that made the formatting.
-      let msgEl = ctxTarget && ctxTarget.closest && ctxTarget.closest('.cr-msg');
+      let msgEl = ctxTarget && ctxTarget.closest && ctxTarget.closest('.aic-msg');
       let text = msgEl ? msgEl.dataset.raw : (ctxSelectedText || (isTextarea ? textarea.value : '')) || '';
       if (text) copyToClipboard(text);
     } else if (action === 'cut' && isTextarea) {
@@ -811,7 +852,7 @@ function mountSidebar(win) {
 
   function appendMsg(role, text) {
     let el = doc.createElement('div');
-    el.className = 'cr-msg ' + role;
+    el.className = 'aic-msg ' + role;
     setMsgContent(el, role, text);
     messagesEl.appendChild(el);
     // Overflow can only be measured once the bubble is laid out, so the
@@ -828,7 +869,7 @@ function mountSidebar(win) {
     } else {
       el.textContent = '';
       let body = doc.createElement('div');
-      body.className = 'cr-msg-body';
+      body.className = 'aic-msg-body';
       body.textContent = text;
       el.appendChild(body);
     }
@@ -846,20 +887,20 @@ function mountSidebar(win) {
   }
 
   function applyCollapse(el) {
-    let body = el.querySelector('.cr-msg-body');
+    let body = el.querySelector('.aic-msg-body');
     if (!body) return;
     // Allow a sub-pixel slack so an exactly-5-line message isn't collapsed.
     let max = Math.round(lineHeightOf(body) * MSG_COLLAPSE_LINES);
     if (body.scrollHeight <= max + 1) return;
-    el.style.setProperty('--cr-collapse-max', max + 'px');
-    el.classList.add('cr-collapsible', 'cr-collapsed');
+    el.style.setProperty('--aic-collapse-max', max + 'px');
+    el.classList.add('aic-collapsible', 'aic-collapsed');
     let toggle = doc.createElement('div');
-    toggle.className = 'cr-msg-toggle';
+    toggle.className = 'aic-msg-toggle';
     toggle.setAttribute('role', 'button');
     toggle.setAttribute('tabindex', '0');
     toggle.textContent = 'See more';
     toggle.addEventListener('click', () => {
-      let collapsed = el.classList.toggle('cr-collapsed');
+      let collapsed = el.classList.toggle('aic-collapsed');
       toggle.textContent = collapsed ? 'See more' : 'See less';
     });
     el.appendChild(toggle);
@@ -872,11 +913,11 @@ function mountSidebar(win) {
 
   function beginTitleEdit() {
     if (!state.chat || historyListEl.style.display !== 'none') return;
-    if (titleWrap.classList.contains('cr-locked')) return;
+    if (titleWrap.classList.contains('aic-locked')) return;
     titleInput.value = state.chat.title || '';
     titleEl.style.display = 'none';
     titleInput.style.display = '';
-    titleWrap.classList.add('cr-editing');
+    titleWrap.classList.add('aic-editing');
     titleInput.focus();
     titleInput.select();
   }
@@ -885,7 +926,7 @@ function mountSidebar(win) {
     if (titleInput.style.display === 'none') return;
     titleInput.style.display = 'none';
     titleEl.style.display = '';
-    titleWrap.classList.remove('cr-editing');
+    titleWrap.classList.remove('aic-editing');
     if (!state.chat) return;
     let val = titleInput.value.trim();
     if (val && val !== state.chat.title) {
@@ -898,7 +939,7 @@ function mountSidebar(win) {
   function cancelTitleEdit() {
     titleInput.style.display = 'none';
     titleEl.style.display = '';
-    titleWrap.classList.remove('cr-editing');
+    titleWrap.classList.remove('aic-editing');
   }
 
   titleWrap.addEventListener('click', beginTitleEdit);
@@ -928,8 +969,8 @@ function mountSidebar(win) {
     };
     state.system = opts.system || '';
     state.getExtraContext = opts.getExtraContext || null;
-    titleEl.textContent = opts.title || 'Claude';
-    titleWrap.classList.add('cr-locked');
+    titleEl.textContent = opts.title || 'AI Chat';
+    titleWrap.classList.add('aic-locked');
     showChatView();
     show();
     renderMessages();
@@ -948,12 +989,12 @@ function mountSidebar(win) {
     if (!chat) return;
     cancelTitleEdit();
     state.chat = chat;
-    state.system = 'You are Claude, continuing a previous conversation' +
+    state.system = 'You are a research assistant, continuing a previous conversation' +
       (chat.contextLabel ? ' about: ' + chat.contextLabel : '') +
       '. Use the prior messages as context.';
     state.getExtraContext = null;
-    titleEl.textContent = chat.title || 'Claude';
-    titleWrap.classList.remove('cr-locked');
+    titleEl.textContent = chat.title || 'AI Chat';
+    titleWrap.classList.remove('aic-locked');
     showChatView();
     show();
     renderMessages();
@@ -961,23 +1002,23 @@ function mountSidebar(win) {
 
   function showHistory() {
     cancelTitleEdit();
-    titleWrap.classList.add('cr-locked');
+    titleWrap.classList.add('aic-locked');
     let chats = ChatStore.list();
     historyListEl.innerHTML = '';
     if (!chats.length) {
       let empty = doc.createElement('div');
-      empty.className = 'cr-history-empty';
+      empty.className = 'aic-history-empty';
       empty.textContent = 'No saved chats yet.';
       historyListEl.appendChild(empty);
     } else {
       for (let chat of chats) {
         let item = doc.createElement('div');
-        item.className = 'cr-history-item';
+        item.className = 'aic-history-item';
         let titleDiv = doc.createElement('div');
-        titleDiv.className = 'cr-hi-title';
+        titleDiv.className = 'aic-hi-title';
         titleDiv.textContent = chat.title || '(untitled chat)';
         let metaDiv = doc.createElement('div');
-        metaDiv.className = 'cr-hi-meta';
+        metaDiv.className = 'aic-hi-meta';
         metaDiv.textContent = (chat.contextLabel ? chat.contextLabel + ' \u00b7 ' : '') +
           new Date(chat.updatedAt).toLocaleString();
         item.appendChild(titleDiv);
@@ -999,7 +1040,7 @@ function mountSidebar(win) {
       try {
         let { title, system } = await buildReaderSystemPrompt(reader);
         startChat({
-          title: 'Claude — ' + title,
+          title: 'AI Chat — ' + title,
           system: system + '\n\nThe user may also ask about other items in their Zotero library; ' +
             'relevant items (title + abstract snippet) matching the question are provided as extra context when found.',
           getExtraContext: async (query) => await searchLibrary(query),
@@ -1018,13 +1059,13 @@ function mountSidebar(win) {
     });
   }
 
-  // Replaces the truncated placeholder title with a short Claude-generated
+  // Replaces the truncated placeholder title with a short model-generated
   // one once the first exchange is underway. Best-effort: falls back
   // silently to the placeholder set in send() if this fails.
   async function generateTitle(chat, firstMessage) {
     let title;
     try {
-      title = await callClaude(
+      title = await callAI(
         [{ role: 'user', content: firstMessage }],
         'Summarize the subject of this message in 4-5 words for use as a chat title. ' +
           'Reply with only the title, no punctuation at the end, no quotes.'
@@ -1040,7 +1081,7 @@ function mountSidebar(win) {
     chat.title = title;
     if (state.chat === chat) {
       titleEl.textContent = title;
-      titleWrap.classList.remove('cr-locked');
+      titleWrap.classList.remove('aic-locked');
     }
     chat.updatedAt = Date.now();
     ChatStore.upsert(chat);
@@ -1065,7 +1106,7 @@ function mountSidebar(win) {
     try {
       let extraContext = state.getExtraContext ? await state.getExtraContext(text) : '';
       let system = state.system + (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
-      let reply = await callClaude(state.chat.messages, system);
+      let reply = await callAI(state.chat.messages, system);
       setMsgContent(placeholder, 'assistant', reply);
       state.chat.messages.push({ role: 'assistant', content: reply });
       persist();
@@ -1108,7 +1149,7 @@ function mountSidebar(win) {
     let newWidth = Math.max(240, Math.min(win.innerWidth * 0.7, win.innerWidth - e.clientX));
     sidebar.style.width = newWidth + 'px';
     resizer.style.right = newWidth + 'px';
-    if (!sidebar.classList.contains('cr-hidden')) applyContentPush();
+    if (!sidebar.classList.contains('aic-hidden')) applyContentPush();
   });
   doc.addEventListener('mouseup', () => {
     if (!dragging) return;
@@ -1127,16 +1168,15 @@ async function onReaderToolbar(event) {
   let { doc, append, reader } = event;
   // renderToolbar fires on every toolbar re-render (page changes, resizes,
   // etc.), so guard against stacking duplicate buttons on top of each other.
-  if (doc.querySelector('.claude-reader-toolbar-btn')) return;
+  if (doc.querySelector('.ai-chat-toolbar-btn')) return;
 
   let btn = doc.createElement('button');
-  btn.className = 'claude-reader-toolbar-btn toolbar-button';
-  btn.title = 'Chat with Claude about this paper';
+  btn.className = 'ai-chat-toolbar-btn toolbar-button';
+  btn.title = 'Chat with AI about this paper';
   btn.style.cssText = 'margin-left:6px;padding:4px;border-radius:4px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;-moz-window-dragging:no-drag;';
-  let icon = doc.createElement('img');
-  icon.src = 'data:image/png;base64,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';
-  icon.style.cssText = 'width:24px;height:24px;';
-  btn.appendChild(icon);
+  btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;">' +
+    '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>' +
+    '</svg>';
   btn.addEventListener('mouseenter', () => { btn.style.background = 'color-mix(in srgb, currentColor 10%, transparent)'; });
   btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
   btn.addEventListener('click', async () => {
@@ -1147,7 +1187,7 @@ async function onReaderToolbar(event) {
       let { title, system } = await buildReaderSystemPrompt(reader);
 
       let win = Zotero.getMainWindow ? Zotero.getMainWindow() : Zotero.getMainWindows()[0];
-      mountSidebar(win).startChat({ title: 'Claude \u2014 ' + title, system });
+      mountSidebar(win).startChat({ title: 'AI Chat \u2014 ' + title, system });
       log('sidebar opened for: ' + title);
       btn.innerHTML = originalIcon;
     } catch (e) {
@@ -1165,17 +1205,17 @@ function onSelectionPopup(event) {
   let { doc, params, append } = event;
   let container = doc.createElement('div');
   let btn = doc.createElement('button');
-  btn.textContent = 'Explain with Claude';
+  btn.textContent = 'Explain with AI';
   btn.style.cssText = 'padding:4px 10px;border-radius:4px;border:1px solid ButtonBorder;background:ButtonFace;color:ButtonText;cursor:pointer;-moz-window-dragging:no-drag;';
   container.appendChild(btn);
   append(container);
 
   btn.addEventListener('click', async () => {
     btn.disabled = true;
-    btn.textContent = 'Asking Claude\u2026';
+    btn.textContent = 'Asking\u2026';
     let selected = params.annotation.text || '';
     try {
-      let reply = await callClaude(
+      let reply = await callAI(
         [{ role: 'user', content: `Explain this passage from a paper, concisely:\n\n"${selected}"` }],
         'You are a research assistant. Be precise and concise. Use plain text, no LaTeX markup.'
       );
@@ -1186,7 +1226,7 @@ function onSelectionPopup(event) {
       container.appendChild(out);
     } catch (e) {
       btn.textContent = 'Error \u2014 see console';
-      Zotero.debug('[ClaudeReader] ' + e.message);
+      Zotero.debug('[AIChat] ' + e.message);
     }
   });
 }
@@ -1201,35 +1241,38 @@ function addToolsMenu(win) {
       log('menu_ToolsPopup not found yet on this window, will retry');
       return false;
     }
-    if (doc.getElementById('claude-reader-menu-key')) {
+    if (doc.getElementById('ai-chat-menu-key')) {
       return true; // already added
     }
 
     let mk = (tag) => (doc.createXULElement ? doc.createXULElement(tag) : doc.createElement(tag));
 
     let sep = mk('menuseparator');
-    sep.id = 'claude-reader-sep';
+    sep.id = 'ai-chat-sep';
     toolsMenu.appendChild(sep);
 
     let miKey = mk('menuitem');
-    miKey.id = 'claude-reader-menu-key';
-    miKey.setAttribute('label', 'Set Claude API Key\u2026');
+    miKey.id = 'ai-chat-menu-key';
+    miKey.setAttribute('label', 'AI Chat: Set API Key\u2026');
     miKey.addEventListener('command', () => {
-      let result = { value: Zotero.Prefs.get(PREF_KEY, true) || '' };
+      let id = activeProviderId();
+      let provider = PROVIDERS[id];
+      let keyPref = providerPref(id, 'apiKey');
+      let result = { value: Zotero.Prefs.get(keyPref, true) || '' };
       let ok = Services.prompt.prompt(
-        win, 'Claude API Key',
-        'Paste your Anthropic API key (not your Claude.ai login):\n\nGet one at console.anthropic.com \u2192 Settings \u2192 API Keys',
+        win, provider.label + ' API Key',
+        'Paste your ' + provider.keyLabel + ':\n\n' + provider.keyHelp,
         result, null, {}
       );
       if (ok && result.value) {
-        Zotero.Prefs.set(PREF_KEY, result.value, true);
+        Zotero.Prefs.set(keyPref, result.value, true);
       }
     });
     toolsMenu.appendChild(miKey);
 
     let miLib = mk('menuitem');
-    miLib.id = 'claude-reader-menu-lib';
-    miLib.setAttribute('label', 'Ask Claude about My Library\u2026');
+    miLib.id = 'ai-chat-menu-lib';
+    miLib.setAttribute('label', 'AI Chat: Ask About My Library\u2026');
     miLib.addEventListener('command', () => {
       mountSidebar(win).startLibraryChat();
     });
@@ -1257,7 +1300,7 @@ function addToolsMenuWithRetry(win, attemptsLeft = 10) {
 
 function removeToolsMenu(win) {
   let doc = win.document;
-  ['claude-reader-sep', 'claude-reader-menu-key', 'claude-reader-menu-lib'].forEach(id => {
+  ['ai-chat-sep', 'ai-chat-menu-key', 'ai-chat-menu-lib'].forEach(id => {
     let el = doc.getElementById(id);
     if (el) el.remove();
   });
@@ -1265,7 +1308,7 @@ function removeToolsMenu(win) {
 
 function removeSidebar(win) {
   let doc = win.document;
-  ['claude-sidebar', 'claude-sidebar-resizer', 'claude-sidebar-style'].forEach(id => {
+  ['ai-chat-sidebar', 'ai-chat-sidebar-resizer', 'ai-chat-sidebar-style'].forEach(id => {
     let el = doc.getElementById(id);
     if (el) el.remove();
   });
@@ -1276,10 +1319,35 @@ function removeSidebar(win) {
 
 // ---------- Lifecycle ----------
 
+// One-time carry-over from the plugin's Claude-only days, when prefs lived
+// under extensions.claudereader.*. Safe to delete once no install predates
+// the rename.
+function migrateLegacyPrefs() {
+  let moves = [
+    ['extensions.claudereader.apiKey', providerPref('anthropic', 'apiKey')],
+    ['extensions.claudereader.model', providerPref('anthropic', 'model')],
+    ['extensions.claudereader.chats', PREF_CHATS],
+    ['extensions.claudereader.sidebarWidth', PREF_SIDEBAR_WIDTH],
+  ];
+  for (let [from, to] of moves) {
+    try {
+      let val = Zotero.Prefs.get(from, true);
+      if (val === undefined || val === null || val === '') continue;
+      if (Zotero.Prefs.get(to, true) !== undefined) continue;
+      Zotero.Prefs.set(to, val, true);
+      log('migrated pref ' + from + ' -> ' + to);
+    } catch (e) {
+      log('pref migration failed for ' + from + ': ' + e.message);
+    }
+  }
+}
+
 function startup({ id, version, rootURI: ru }, reason) {
   rootURI = ru;
   // Zotero, Services, Cc, and Ci are automatically injected into the
   // bootstrap scope in Zotero 7+ — no manual lookup needed or possible.
+
+  migrateLegacyPrefs();
 
   Zotero.Reader.registerEventListener('renderToolbar', onReaderToolbar, PLUGIN_ID);
   Zotero.Reader.registerEventListener('renderTextSelectionPopup', onSelectionPopup, PLUGIN_ID);
@@ -1288,7 +1356,7 @@ function startup({ id, version, rootURI: ru }, reason) {
     addToolsMenuWithRetry(win);
   }
 
-  Zotero.ClaudeReader = { callClaude, searchLibrary, mountSidebar, ChatStore };
+  Zotero.AIChat = { callAI, searchLibrary, mountSidebar, ChatStore, PROVIDERS, activeProviderId };
   log('startup complete');
 }
 
@@ -1310,7 +1378,7 @@ function shutdown(data, reason) {
       removeSidebar(win);
     }
   } catch (e) {}
-  delete Zotero.ClaudeReader;
+  delete Zotero.AIChat;
 }
 
 function install() {}

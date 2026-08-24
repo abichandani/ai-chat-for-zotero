@@ -1,28 +1,30 @@
 <?xml version="1.0"?>
 <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
         xmlns:html="http://www.w3.org/1999/xhtml"
-        title="Claude API Key">
+        title="AI Chat API Key">
   <html:style>
     window { min-width: 440px; min-height: 180px; }
-    .cr-wrap { padding: 18px; font-family: sans-serif; box-sizing: border-box; width: 100%; }
-    .cr-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
-    .cr-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 13px; }
-    .cr-subtext { color: #888; font-size: 11px; margin-top: 8px; }
-    .cr-buttons { margin-top: 18px; }
-    .cr-buttons button { margin-left: 8px; }
+    .aic-wrap { padding: 18px; font-family: sans-serif; box-sizing: border-box; width: 100%; }
+    .aic-title { font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+    .aic-input { width: 100%; box-sizing: border-box; padding: 6px 8px; font-size: 13px; }
+    .aic-subtext { color: #888; font-size: 11px; margin-top: 8px; }
+    .aic-buttons { margin-top: 18px; }
+    .aic-buttons button { margin-left: 8px; }
   </html:style>
-  <html:div class="cr-wrap">
-    <html:div class="cr-title">Paste your Anthropic API key (not your Claude.ai login):</html:div>
-    <html:input id="cr-key-input" class="cr-input" type="text"/>
-    <html:div class="cr-subtext">Get one at console.anthropic.com &#8594; Settings &#8594; API Keys</html:div>
-    <hbox class="cr-buttons" pack="end">
-      <button id="cr-cancel" label="Cancel"/>
-      <button id="cr-ok" label="OK" default="true"/>
+  <html:div class="aic-wrap">
+    <html:div class="aic-title" id="aic-key-label">Paste your API key:</html:div>
+    <html:input id="aic-key-input" class="aic-input" type="text"/>
+    <html:div class="aic-subtext" id="aic-key-help"></html:div>
+    <hbox class="aic-buttons" pack="end">
+      <button id="aic-cancel" label="Cancel"/>
+      <button id="aic-ok" label="OK" default="true"/>
     </hbox>
   </html:div>
   <script><![CDATA[
-    let input = document.getElementById('cr-key-input');
+    let input = document.getElementById('aic-key-input');
     let params = (window.arguments && window.arguments[0]) || {};
+    if (params.keyLabel) document.getElementById('aic-key-label').textContent = 'Paste your ' + params.keyLabel + ':';
+    document.getElementById('aic-key-help').textContent = params.keyHelp || '';
     input.value = params.value || '';
     input.focus();
 
@@ -32,8 +34,8 @@
       window.close();
     }
 
-    document.getElementById('cr-ok').addEventListener('command', () => finish(true));
-    document.getElementById('cr-cancel').addEventListener('command', () => finish(false));
+    document.getElementById('aic-ok').addEventListener('command', () => finish(true));
+    document.getElementById('aic-cancel').addEventListener('command', () => finish(false));
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') finish(true);
       if (e.key === 'Escape') finish(false);

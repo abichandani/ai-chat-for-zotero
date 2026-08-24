@@ -1,20 +1,20 @@
 {
-  "name": "claude-reader",
+  "name": "ai-chat-for-zotero",
   "version": "0.1.0",
-  "description": "Chat with Claude while reading in Zotero: explain selections, ask about the open paper, or search your library.",
+  "description": "Chat with an AI assistant while reading in Zotero: explain selections, ask about the open paper, or search your library.",
   "author": "Hitesh",
   "license": "UNLICENSED",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/abichandani/claude-for-zotero.git"
+    "url": "git+https://github.com/abichandani/ai-chat-for-zotero.git"
   },
   "config": {
-    "addonName": "Claude for Zotero",
-    "addonID": "claude-reader@hitesh.local",
-    "addonRef": "claudereader",
-    "addonInstance": "ClaudeReader",
-    "prefsPrefix": "extensions.claudereader"
+    "addonName": "AI Chat for Zotero",
+    "addonID": "ai-chat@hitesh.local",
+    "addonRef": "aichat",
+    "addonInstance": "AIChat",
+    "prefsPrefix": "extensions.aichat"
   },
   "scripts": {
     "start": "zotero-plugin serve",

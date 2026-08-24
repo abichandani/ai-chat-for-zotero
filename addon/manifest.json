@@ -1,13 +1,13 @@
 {
   "manifest_version": 2,
-  "name": "Claude for Zotero",
+  "name": "AI Chat for Zotero",
   "version": "0.1.0",
-  "description": "Chat with Claude while reading: explain selections, ask about the open paper, or search your library.",
+  "description": "Chat with an AI assistant while reading: explain selections, ask about the open paper, or search your library.",
   "author": "Hitesh",
   "applications": {
     "zotero": {
-      "id": "claude-reader@hitesh.local",
-      "update_url": "https://example.com/claude-reader-updates.json",
+      "id": "ai-chat@hitesh.local",
+      "update_url": "https://example.com/ai-chat-updates.json",
       "strict_min_version": "7.0",
       "strict_max_version": "*"
     }

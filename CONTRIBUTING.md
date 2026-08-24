@@ -21,7 +21,10 @@ Edit `.env` to point at your local Zotero binary and profile directory
 ## Live-reload dev loop
 
 Plugin source lives in [addon/](addon/) (`manifest.json`, `bootstrap.js`,
-`content/`). This repo uses
+`content/`). All provider-specific code — endpoint, request shape, reply
+parsing, where to get a key — lives in the `PROVIDERS` registry near the
+top of `bootstrap.js`; adding a provider means adding one entry there and
+nothing else. This repo uses
 [zotero-plugin-scaffold](https://github.com/northword/zotero-plugin-scaffold)
 so you don't have to manually rebuild/reinstall an xpi after every change:
 
@@ -33,7 +36,7 @@ so you don't have to manually rebuild/reinstall an xpi after every change:
 
 ## Building an xpi manually
 
-`npm run build` produces `.scaffold/build/claude-reader.xpi`, the same
+`npm run build` produces `.scaffold/build/ai-chat-for-zotero.xpi`, the same
 artifact end users install via **Tools → Plugins → Install Plugin From
 File**. Use this when you want a distributable file rather than a live
 dev session.
