@@ -147,6 +147,29 @@ function renderInlineMarkdown(s) {
   return s;
 }
 
+function isTableDelimiter(line) {
+  return /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)*\|?\s*$/.test(line) && line.includes('-');
+}
+
+// Splits one table row into cells, dropping the optional leading/trailing pipe.
+function splitRow(line) {
+  let s = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return s.split('|').map(c => c.trim());
+}
+
+// Zotero's window is an XHTML (XML) document, so `innerHTML` there runs the
+// strict XML parser: one void tag such as <hr> makes the whole assignment
+// throw and the message renders as nothing. Parsing the string as text/html
+// and importing the nodes uses the real HTML parser instead.
+function setRenderedHtml(el, html) {
+  let doc = el.ownerDocument;
+  el.textContent = '';
+  let parsed = new (doc.defaultView.DOMParser)().parseFromString('<body>' + html + '</body>', 'text/html');
+  for (let node of Array.from(parsed.body.childNodes)) {
+    el.appendChild(doc.importNode(node, true));
+  }
+}
+
 function renderMarkdown(text) {
   let escaped = escapeHtml(text);
   let lines = escaped.split('\n');
@@ -174,12 +197,39 @@ function renderMarkdown(text) {
       i++;
       continue;
     }
-    let heading = line.match(/^(#{1,3})\s+(.*)$/);
+    let heading = line.match(/^(#{1,6})\s+(.*)$/);
     if (heading) {
       flushList();
       let level = heading[1].length;
       html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
       i++;
+      continue;
+    }
+    if (/^ {0,3}(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushList();
+      html.push('<hr>');
+      i++;
+      continue;
+    }
+    // GFM pipe table: a header row followed by a |---|:--:| delimiter row.
+    if (line.includes('|') && i + 1 < lines.length && lines[i + 1].includes('|') && isTableDelimiter(lines[i + 1])) {
+      flushList();
+      let aligns = splitRow(lines[i + 1]).map(c => {
+        let left = c.startsWith(':'), right = c.endsWith(':');
+        return right ? (left ? 'center' : 'right') : (left ? 'left' : '');
+      });
+      let cells = (row, tag) => splitRow(row).map((c, n) => {
+        let a = aligns[n] ? ` style="text-align:${aligns[n]}"` : '';
+        return `<${tag}${a}>${renderInlineMarkdown(c)}</${tag}>`;
+      }).join('');
+      let body = [];
+      let head = `<thead><tr>${cells(line, 'th')}</tr></thead>`;
+      i += 2;
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim() !== '') {
+        body.push(`<tr>${cells(lines[i], 'td')}</tr>`);
+        i++;
+      }
+      html.push(`<table>${head}<tbody>${body.join('')}</tbody></table>`);
       continue;
     }
     let ol = line.match(/^\s*\d+\.\s+(.*)$/);
@@ -364,9 +414,30 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar .cr-msg.assistant pre code { background: transparent; padding: 0; }
     #claude-sidebar .cr-msg.assistant strong { font-weight: 700; }
-    #claude-sidebar .cr-msg.assistant h1, #claude-sidebar .cr-msg.assistant h2, #claude-sidebar .cr-msg.assistant h3 {
-      margin: 6px 0 4px 0; font-size: 1.05em;
+    #claude-sidebar .cr-msg.assistant h1, #claude-sidebar .cr-msg.assistant h2,
+    #claude-sidebar .cr-msg.assistant h3, #claude-sidebar .cr-msg.assistant h4,
+    #claude-sidebar .cr-msg.assistant h5, #claude-sidebar .cr-msg.assistant h6 {
+      margin: 10px 0 4px 0; font-weight: 700; line-height: 1.25;
     }
+    #claude-sidebar .cr-msg.assistant h1 { font-size: 1.45em; }
+    #claude-sidebar .cr-msg.assistant h2 { font-size: 1.25em; }
+    #claude-sidebar .cr-msg.assistant h3 { font-size: 1.1em; }
+    #claude-sidebar .cr-msg.assistant h4,
+    #claude-sidebar .cr-msg.assistant h5,
+    #claude-sidebar .cr-msg.assistant h6 { font-size: 1em; }
+    #claude-sidebar .cr-msg.assistant :first-child { margin-top: 0; }
+    #claude-sidebar .cr-msg.assistant hr {
+      border: none; border-top: 1px solid var(--cr-border); margin: 10px 0;
+    }
+    #claude-sidebar .cr-msg.assistant table {
+      border-collapse: collapse; margin: 6px 0; font-size: 0.95em; display: block;
+      overflow-x: auto; max-width: 100%;
+    }
+    #claude-sidebar .cr-msg.assistant th, #claude-sidebar .cr-msg.assistant td {
+      border: 1px solid var(--cr-border); padding: 3px 7px; text-align: left;
+      white-space: normal; vertical-align: top;
+    }
+    #claude-sidebar .cr-msg.assistant th { background: var(--cr-code-bg); font-weight: 700; }
     #claude-sidebar .cr-msg.assistant a { color: var(--cr-link); }
     #claude-sidebar .cr-input-area {
       flex-shrink: 0; padding: 0 8px 8px 8px; background: var(--cr-messages-bg);
@@ -748,7 +819,7 @@ function mountSidebar(win) {
   function setMsgContent(el, role, text) {
     el.dataset.raw = text;
     if (role === 'assistant') {
-      el.innerHTML = renderMarkdown(text);
+      setRenderedHtml(el, renderMarkdown(text));
     } else {
       el.textContent = '';
       let body = doc.createElement('div');
