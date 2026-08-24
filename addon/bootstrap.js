@@ -593,9 +593,11 @@ function mountSidebar(win) {
     let isTextarea = ctxTarget === textarea || (ctxTarget && ctxTarget.closest && ctxTarget.closest('textarea') === textarea);
     let action = item.dataset.action;
     if (action === 'copy') {
-      // Fall back to the whole message/textarea when nothing was selected,
-      // so "Copy" on a message bubble still does something useful.
-      let text = ctxSelectedText || (isTextarea ? textarea.value : (ctxTarget && ctxTarget.closest('.cr-msg') || {}).textContent) || '';
+      // For a message bubble, copy the raw text Claude sent (with markdown
+      // syntax intact) rather than the rendered HTML's plain text -- the
+      // rendered text loses the "**"/"`"/etc that made the formatting.
+      let msgEl = ctxTarget && ctxTarget.closest && ctxTarget.closest('.cr-msg');
+      let text = msgEl ? msgEl.dataset.raw : (ctxSelectedText || (isTextarea ? textarea.value : '')) || '';
       if (text) copyToClipboard(text);
     } else if (action === 'cut' && isTextarea) {
       let start = textarea.selectionStart, end = textarea.selectionEnd;
@@ -630,6 +632,7 @@ function mountSidebar(win) {
   }
 
   function setMsgContent(el, role, text) {
+    el.dataset.raw = text;
     if (role === 'assistant') {
       el.innerHTML = renderMarkdown(text);
     } else {
