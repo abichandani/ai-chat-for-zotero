@@ -100,12 +100,12 @@ async function buildReaderSystemPrompt(reader) {
   let fullText = await getReaderFullText(reader.itemID);
 
   let system = fullText
-    ? `You are discussing the paper "${title}" with a physics researcher. ` +
+    ? `You are discussing the paper "${title}" with a researcher. ` +
       `Abstract: ${abstract || '(none available)'}.\n\n` +
       `Full text of the paper (may be truncated):\n${fullText}\n\n` +
       `Answer using this text plus your general knowledge of the field. Be precise and concise. ` +
       `If asked about something not in the excerpt above, say so rather than guessing.`
-    : `You are discussing the paper "${title}" with a physics researcher. ` +
+    : `You are discussing the paper "${title}" with a researcher. ` +
       `Abstract: ${abstract || '(none available)'}. ` +
       `Full text could not be extracted (the PDF may not be indexed yet — try again in a moment, ` +
       `or Zotero > right-click item > "Reindex Item"). They may paste excerpts manually in the meantime.`;
@@ -1000,7 +1000,7 @@ function mountSidebar(win) {
         let { title, system } = await buildReaderSystemPrompt(reader);
         startChat({
           title: 'Claude — ' + title,
-          system: system + '\n\nThe user may also ask about other items in their physics Zotero library; ' +
+          system: system + '\n\nThe user may also ask about other items in their Zotero library; ' +
             'relevant items (title + abstract snippet) matching the question are provided as extra context when found.',
           getExtraContext: async (query) => await searchLibrary(query),
         });
@@ -1011,7 +1011,7 @@ function mountSidebar(win) {
     }
     startChat({
       title: '',
-      system: 'You are a research assistant helping search and discuss a physics Zotero library. ' +
+      system: 'You are a research assistant helping search and discuss a Zotero library. ' +
         'Relevant items (title + abstract snippet) matching the user\'s question are provided as context when found. ' +
         'If nothing relevant was found, say so rather than inventing papers.',
       getExtraContext: async (query) => await searchLibrary(query),
@@ -1176,8 +1176,8 @@ function onSelectionPopup(event) {
     let selected = params.annotation.text || '';
     try {
       let reply = await callClaude(
-        [{ role: 'user', content: `Explain this passage from a physics paper, concisely:\n\n"${selected}"` }],
-        'You are a physics research assistant. Be precise and concise. Use plain text, no LaTeX markup.'
+        [{ role: 'user', content: `Explain this passage from a paper, concisely:\n\n"${selected}"` }],
+        'You are a research assistant. Be precise and concise. Use plain text, no LaTeX markup.'
       );
       container.innerHTML = '';
       let out = doc.createElement('div');
