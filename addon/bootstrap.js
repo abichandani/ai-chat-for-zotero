@@ -405,6 +405,7 @@ function mountSidebar(win) {
     <div class="cr-ctx-item" data-action="cut">Cut</div>
     <div class="cr-ctx-item" data-action="copy">Copy</div>
     <div class="cr-ctx-item" data-action="paste">Paste</div>
+    <div class="cr-ctx-item" data-action="pasteplain">Paste as plain text</div>
   `;
 
   anchor.appendChild(resizer);
@@ -546,6 +547,7 @@ function mountSidebar(win) {
     setCtxItemEnabled('cut', isTextarea);
     setCtxItemEnabled('copy', true);
     setCtxItemEnabled('paste', isTextarea);
+    setCtxItemEnabled('pasteplain', isTextarea);
     // Measure before clamping -- the menu needs a size to know whether it
     // overflows the window (e.g. opened near the taskbar/bottom edge).
     ctxMenu.style.left = '0px';
@@ -578,7 +580,9 @@ function mountSidebar(win) {
         textarea.selectionStart = textarea.selectionEnd = start;
       }
       textarea.focus();
-    } else if (action === 'paste' && isTextarea) {
+    } else if ((action === 'paste' || action === 'pasteplain') && isTextarea) {
+      // The target is a plain-text textarea, so there's nothing for "as
+      // plain text" to strip -- both read the same text/unicode flavor.
       let text = readFromClipboard();
       if (text) {
         let start = textarea.selectionStart, end = textarea.selectionEnd;
