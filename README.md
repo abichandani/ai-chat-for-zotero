@@ -5,6 +5,9 @@ chat assistant next to what you're reading. You bring your own API key —
 the plugin talks to the provider's API directly, with no server in
 between.
 
+**Platform:** built for the Zotero **Windows** desktop application only
+for now — it hasn't been built or tested against macOS or Linux.
+
 **Providers:** Claude (Anthropic) ships today. Everything
 provider-specific lives in a single `PROVIDERS` registry in
 `addon/bootstrap.js`, so OpenAI, Gemini, and OpenAI-compatible endpoints
@@ -94,6 +97,8 @@ migrated once on startup, so an existing key and chat history carry over.
   release — if the menu items don't appear, that ID is the first
   thing to check via **Help → Debug Output Logging** or the error
   console (Tools → Developer → Error Console).
+- **Windows only** — developed and tested against the Zotero Windows
+  desktop app; other platforms are untested.
 - No streaming — replies appear once complete.
 - Only one provider is registered so far, so there's no provider picker
   in the UI yet; the model is set through the hidden pref above.
