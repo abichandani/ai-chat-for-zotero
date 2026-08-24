@@ -303,12 +303,13 @@ function injectSidebarStyle(doc) {
       display: flex; justify-content: space-between; align-items: center; gap: 6px;
     }
     #claude-sidebar .cr-title-wrap {
-      display: flex; align-items: center; gap: 4px; flex: 1; overflow: hidden;
+      display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow: hidden;
       padding: 3px 6px; border-radius: 5px; cursor: pointer;
     }
+    #claude-sidebar .cr-title-wrap.cr-editing { flex: 1; }
     #claude-sidebar .cr-title-wrap:hover { background: var(--cr-bg-hover); }
     #claude-sidebar .cr-title {
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-weight: 600;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; font-weight: 600;
     }
     #claude-sidebar .cr-title-edit-icon {
       display: none; font-size: 11px; color: var(--cr-text-muted); flex-shrink: 0;
@@ -781,6 +782,7 @@ function mountSidebar(win) {
     titleInput.value = state.chat.title || '';
     titleEl.style.display = 'none';
     titleInput.style.display = '';
+    titleWrap.classList.add('cr-editing');
     titleInput.focus();
     titleInput.select();
   }
@@ -789,6 +791,7 @@ function mountSidebar(win) {
     if (titleInput.style.display === 'none') return;
     titleInput.style.display = 'none';
     titleEl.style.display = '';
+    titleWrap.classList.remove('cr-editing');
     if (!state.chat) return;
     let val = titleInput.value.trim();
     if (val && val !== state.chat.title) {
@@ -801,6 +804,7 @@ function mountSidebar(win) {
   function cancelTitleEdit() {
     titleInput.style.display = 'none';
     titleEl.style.display = '';
+    titleWrap.classList.remove('cr-editing');
   }
 
   titleWrap.addEventListener('click', beginTitleEdit);
