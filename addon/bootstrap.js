@@ -308,7 +308,9 @@ function injectSidebarStyle(doc) {
     }
     #claude-sidebar .cr-msg.assistant a { color: var(--cr-link); }
     #claude-sidebar .cr-input-row {
-      display: flex; border-top: 1px solid var(--cr-border-input); flex-shrink: 0; background: var(--cr-input-bg);
+      display: flex; flex-shrink: 0; background: var(--cr-input-bg);
+      margin: 0 8px 8px 8px; border: 1px solid var(--cr-border-input); border-radius: 10px;
+      overflow: hidden;
     }
     #claude-sidebar textarea {
       flex: 1; border: none; background: transparent; padding: 8px; resize: none; height: 44px;
