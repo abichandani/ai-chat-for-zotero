@@ -389,7 +389,8 @@ function injectSidebarStyle(doc) {
     }
     #ai-chat-sidebar.aic-hidden, #ai-chat-sidebar-resizer.aic-hidden { display: none; }
     #ai-chat-sidebar .aic-header {
-      padding: 6px 8px; background: var(--aic-bg-alt);
+      height: var(--aic-header-height, 32px); box-sizing: border-box; flex-shrink: 0;
+      padding: 0 8px; background: var(--aic-bg-alt);
       border-top: 1px solid var(--aic-border-alt); border-bottom: 1px solid var(--aic-border-alt); color: var(--aic-text-alt);
       display: flex; justify-content: space-between; align-items: center; gap: 6px;
     }
@@ -417,7 +418,7 @@ function injectSidebarStyle(doc) {
     }
     #ai-chat-sidebar .aic-header-btns { display: flex; gap: 2px; flex-shrink: 0; }
     #ai-chat-sidebar .aic-header-btns [role="button"] {
-      cursor: pointer; font-size: 18px; line-height: 1; padding: 5px 10px; border-radius: 5px; color: var(--aic-text-muted);
+      cursor: pointer; font-size: 18px; line-height: 1; padding: 3px 8px; border-radius: 5px; color: var(--aic-text-muted);
       display: flex; align-items: center; justify-content: center;
     }
     #ai-chat-sidebar .aic-header-btns .aic-close { font-size: 14px; }
@@ -567,6 +568,19 @@ function getContentTopOffset(doc) {
   return 0;
 }
 
+// The reader toolbar and the sidebar header both start at the tab strip's
+// bottom edge and sit side by side, so the header is sized to whatever the
+// toolbar actually measures -- a hardcoded value drifts between Zotero
+// versions and display scalings. Until a reader has been opened there is
+// nothing to measure and the CSS fallback stands.
+let readerToolbarHeight = null;
+
+function applyHeaderHeight(doc) {
+  if (!readerToolbarHeight) return;
+  let sidebar = doc.getElementById('ai-chat-sidebar');
+  if (sidebar) sidebar.style.setProperty('--aic-header-height', readerToolbarHeight + 'px');
+}
+
 // Mounts (once per main window) a persistent docked sidebar and returns an
 // API for driving it. Idempotent -- safe to call from every entry point.
 function mountSidebar(win) {
@@ -692,6 +706,7 @@ function mountSidebar(win) {
     let top = getContentTopOffset(doc);
     sidebar.style.top = top + 'px';
     resizer.style.top = top + 'px';
+    applyHeaderHeight(doc);
     sidebar.classList.remove('aic-hidden');
     resizer.classList.remove('aic-hidden');
     applyContentPush();
@@ -1164,8 +1179,30 @@ function mountSidebar(win) {
 
 // ---------- Reader hooks ----------
 
+// A single speech bubble with one sparkle off its top-right corner, drawn in
+// currentColor so it stays transparent and follows the toolbar's foreground
+// colour in light and dark mode alike, the way Zotero's own toolbar icons do.
+//
+// Sized deliberately larger than the surrounding reader-toolbar icons: the
+// glyph inks about 22px of the 24px box, leaving roughly a unit of margin all
+// round. The bubble's corners are a 1.4 radius with mitred joins to keep the
+// edges crisp, and the sparkle clears the bubble's inked right edge by 1.2
+// units so the two never touch at render size.
+const CHAT_BUBBLE_PATH =
+  'M3.4 8.2H15.8A1.4 1.4 0 0 1 17.2 9.6V17.6A1.4 1.4 0 0 1 15.8 19H7.4L2 22V9.6A1.4 1.4 0 0 1 3.4 8.2Z';
+const CHAT_SPARKLE_PATH =
+  'M19.3 1C19.3 3.85 20.35 4.9 23.2 4.9C20.35 4.9 19.3 5.95 19.3 8.8C19.3 5.95 18.25 4.9 15.4 4.9C18.25 4.9 19.3 3.85 19.3 1Z';
+
+const CHAT_ICON_SVG =
+  '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+    'stroke-width="1.6" stroke-linecap="round" stroke-linejoin="miter" style="pointer-events:none;">' +
+    '<path d="' + CHAT_BUBBLE_PATH + '"/>' +
+    '<path d="' + CHAT_SPARKLE_PATH + '" fill="currentColor" stroke="none"/>' +
+  '</svg>';
+
 async function onReaderToolbar(event) {
   let { doc, append, reader } = event;
+  let readerWin = doc.defaultView;
   // renderToolbar fires on every toolbar re-render (page changes, resizes,
   // etc.), so guard against stacking duplicate buttons on top of each other.
   if (doc.querySelector('.ai-chat-toolbar-btn')) return;
@@ -1173,10 +1210,8 @@ async function onReaderToolbar(event) {
   let btn = doc.createElement('button');
   btn.className = 'ai-chat-toolbar-btn toolbar-button';
   btn.title = 'Chat with AI about this paper';
-  btn.style.cssText = 'margin-left:6px;padding:4px;border-radius:4px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;-moz-window-dragging:no-drag;';
-  btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;">' +
-    '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>' +
-    '</svg>';
+  btn.style.cssText = 'margin-left:6px;padding:2px;border-radius:4px;border:none;background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center;-moz-window-dragging:no-drag;';
+  btn.innerHTML = CHAT_ICON_SVG;
   btn.addEventListener('mouseenter', () => { btn.style.background = 'color-mix(in srgb, currentColor 10%, transparent)'; });
   btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
   btn.addEventListener('click', async () => {
@@ -1199,6 +1234,21 @@ async function onReaderToolbar(event) {
     }
   });
   append(btn);
+
+  // Measured on the next frame: renderToolbar fires mid-render, so the
+  // toolbar has no laid-out box yet at this point.
+  readerWin.requestAnimationFrame(() => {
+    let toolbar = btn.closest('.toolbar') || doc.querySelector('.toolbar');
+    let h = toolbar && toolbar.getBoundingClientRect().height;
+    if (!h) {
+      log('reader toolbar height could not be measured, sidebar header keeps its default');
+      return;
+    }
+    readerToolbarHeight = h;
+    log('reader toolbar height measured: ' + h);
+    let mainWin = Zotero.getMainWindow ? Zotero.getMainWindow() : Zotero.getMainWindows()[0];
+    if (mainWin) applyHeaderHeight(mainWin.document);
+  });
 }
 
 function onSelectionPopup(event) {
