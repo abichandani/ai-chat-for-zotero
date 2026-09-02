@@ -170,6 +170,29 @@ async function searchLibrary(query, limit = 6) {
   }).join('\n');
 }
 
+// ---------- Attached files ----------
+// Only text can be attached: the chat API here takes plain-text messages, so
+// a PDF or image is reported as unreadable rather than pasted in as mojibake.
+
+const MAX_CONTEXT_FILE_CHARS = 8000;
+async function buildFileContext(path, name) {
+  let text;
+  try {
+    text = await Zotero.File.getContentsAsync(path);
+  } catch (e) {
+    return 'File "' + name + '" could not be read: ' + e.message;
+  }
+  // Binary files keep their NUL bytes through the UTF-8 decode, which no real
+  // text file has.
+  if (typeof text !== 'string' || text.slice(0, 4000).indexOf('\x00') !== -1) {
+    return 'File "' + name + '" is not a text file, so its contents could not be included.';
+  }
+  if (text.length > MAX_CONTEXT_FILE_CHARS) {
+    text = text.slice(0, MAX_CONTEXT_FILE_CHARS) + '\n[...truncated...]';
+  }
+  return 'File "' + name + '":\n' + text;
+}
+
 // ---------- Minimal markdown rendering ----------
 // No bundled markdown library is available in a bootstrap plugin, so this
 // handles just the subset models actually produce in chat replies: headers,
@@ -488,6 +511,7 @@ function injectSidebarStyle(doc) {
     #ai-chat-sidebar .aic-msg.assistant a { color: var(--aic-link); }
     #ai-chat-sidebar .aic-input-area {
       flex-shrink: 0; padding: 0 8px 8px 8px; background: var(--aic-messages-bg);
+      position: relative;
     }
     #ai-chat-sidebar .aic-input-row {
       display: flex; flex-direction: column; flex-shrink: 0; background: var(--aic-input-bg);
@@ -505,7 +529,7 @@ function injectSidebarStyle(doc) {
     }
     #ai-chat-sidebar textarea:focus { outline: none; }
     #ai-chat-sidebar .aic-input-actions {
-      display: flex; justify-content: flex-end; align-items: center; flex-shrink: 0;
+      display: flex; justify-content: space-between; align-items: center; flex-shrink: 0;
       padding: 6px 8px; border-top: 1px solid var(--aic-border-input);
     }
     #ai-chat-sidebar .aic-send {
@@ -527,6 +551,44 @@ function injectSidebarStyle(doc) {
     }
     #ai-chat-sidebar .aic-history-item .aic-hi-meta { font-size: 11px; color: var(--aic-text-faint); }
     #ai-chat-sidebar .aic-history-empty { padding: 12px; color: var(--aic-text-faint); text-align: center; }
+    #ai-chat-sidebar .aic-plus {
+      border: none; border-radius: 6px; background: transparent; color: var(--aic-text-muted);
+      width: 26px; height: 26px; box-sizing: border-box; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    #ai-chat-sidebar .aic-plus:hover { background: var(--aic-send-hover); color: var(--aic-text); }
+    #ai-chat-sidebar .aic-plus svg { width: 20px; height: 20px; display: block; }
+    /* Anchored to .aic-input-area, not to the button: .aic-input-row clips its
+       own overflow to keep the composer's rounded corners, which would cut the
+       menu off at the top edge. */
+    #ai-chat-sidebar .aic-plus-menu {
+      position: absolute; left: 8px; bottom: 100%; margin-bottom: 4px; display: none; z-index: 4;
+      background: var(--aic-bg); border: 1px solid var(--aic-menu-border); border-radius: 10px;
+      padding: 5px; min-width: 190px; box-shadow: 0 4px 14px var(--aic-menu-shadow);
+      white-space: nowrap;
+    }
+    #ai-chat-sidebar .aic-plus-menu.aic-open { display: block; }
+    #ai-chat-sidebar .aic-plus-item {
+      display: flex; align-items: center; gap: 10px; padding: 7px 10px;
+      border-radius: 6px; cursor: pointer; color: var(--aic-text);
+    }
+    #ai-chat-sidebar .aic-plus-item:hover { background: var(--aic-bg-hover); }
+    #ai-chat-sidebar .aic-plus-item svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--aic-text-muted); }
+    #ai-chat-sidebar .aic-chips {
+      display: none; flex-wrap: wrap; gap: 4px; padding: 7px 8px;
+      border-bottom: 1px solid var(--aic-border-input);
+    }
+    #ai-chat-sidebar .aic-chips.aic-open { display: flex; }
+    #ai-chat-sidebar .aic-chip {
+      display: flex; align-items: center; gap: 5px; max-width: 100%; box-sizing: border-box;
+      background: var(--aic-bg-hover); border-radius: 5px; padding: 2px 5px 2px 7px;
+      font-size: 11.5px; color: var(--aic-text);
+    }
+    #ai-chat-sidebar .aic-chip > svg { width: 12px; height: 12px; flex-shrink: 0; color: var(--aic-text-faint); }
+    #ai-chat-sidebar .aic-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ai-chat-sidebar .aic-chip-x { cursor: pointer; color: var(--aic-text-faint); display: flex; }
+    #ai-chat-sidebar .aic-chip-x svg { width: 11px; height: 11px; }
+    #ai-chat-sidebar .aic-chip-x:hover { color: var(--aic-text); }
     #aic-ctxmenu {
       position: fixed; display: none; z-index: 1000001; background: var(--aic-bg);
       border: 1px solid var(--aic-menu-border); border-radius: 6px; padding: 4px 0; min-width: 110px;
@@ -581,6 +643,43 @@ function applyHeaderHeight(doc) {
   if (sidebar) sidebar.style.setProperty('--aic-header-height', readerToolbarHeight + 'px');
 }
 
+// Plus button, its menu entry and the attachment chips, all stroked in
+// currentColor so they follow the sidebar's light/dark palette. Sizing is
+// left to CSS.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const SVG_ATTRS = {
+  viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
+  'stroke-width': '1.5', 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+};
+
+const ICON_PATHS = {
+  plus: ['M8 3v10M3 8h10'],
+  upload: ['M8 10.5V2.6M5 5.6 8 2.6l3 3', 'M2.5 10.8v1.7a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.7'],
+  close: ['M4.5 4.5l7 7M11.5 4.5l-7 7'],
+};
+
+// For the markup that goes in through innerHTML. The xmlns matters there: the
+// sidebar lives in an XML document, where an undeclared <svg> would land in
+// the wrong namespace and render nothing.
+function iconMarkup(name) {
+  let attrs = Object.entries(SVG_ATTRS).map(([k, v]) => k + '="' + v + '"').join(' ');
+  return '<svg xmlns="' + SVG_NS + '" ' + attrs + '>' +
+    ICON_PATHS[name].map(d => '<path d="' + d + '"/>').join('') + '</svg>';
+}
+
+// For icons built in script (the chips), where the same namespace rule means
+// createElement('svg') would silently produce nothing visible.
+function makeIcon(doc, name) {
+  let svg = doc.createElementNS(SVG_NS, 'svg');
+  for (let [k, v] of Object.entries(SVG_ATTRS)) svg.setAttribute(k, v);
+  for (let d of ICON_PATHS[name]) {
+    let path = doc.createElementNS(SVG_NS, 'path');
+    path.setAttribute('d', d);
+    svg.appendChild(path);
+  }
+  return svg;
+}
+
 // Mounts (once per main window) a persistent docked sidebar and returns an
 // API for driving it. Idempotent -- safe to call from every entry point.
 function mountSidebar(win) {
@@ -629,9 +728,14 @@ function mountSidebar(win) {
     <div class="aic-messages"></div>
     <div class="aic-history-list" style="display:none"></div>
     <div class="aic-input-area">
+      <div class="aic-plus-menu">
+        <div class="aic-plus-item" data-action="attach">${iconMarkup('upload')}<span>Attach files</span></div>
+      </div>
       <div class="aic-input-row">
+        <div class="aic-chips"></div>
         <textarea placeholder="Ask anything\u2026"></textarea>
         <div class="aic-input-actions">
+          <div class="aic-plus" tabindex="0" role="button" title="Attach files">${iconMarkup('plus')}</div>
           <div class="aic-send" tabindex="0" role="button">Send</div>
         </div>
       </div>
@@ -664,8 +768,13 @@ function mountSidebar(win) {
   let newBtn = sidebar.querySelector('.aic-new');
   let historyBtn = sidebar.querySelector('.aic-history');
   let inputArea = sidebar.querySelector('.aic-input-area');
+  let plusBtn = sidebar.querySelector('.aic-plus');
+  let plusMenu = sidebar.querySelector('.aic-plus-menu');
+  let chipsEl = sidebar.querySelector('.aic-chips');
 
-  let state = { chat: null, system: '', getExtraContext: null };
+  // state.context is what the plus menu has attached to the current chat:
+  // { path, label, textPromise } entries, resolved to prompt text on send.
+  let state = { chat: null, system: '', getExtraContext: null, context: [] };
 
   // Pushes the rest of Zotero's UI over by setting a margin on #browser
   // (the hbox that actually lays out the reader/tab content -- the same box
@@ -984,6 +1093,7 @@ function mountSidebar(win) {
     };
     state.system = opts.system || '';
     state.getExtraContext = opts.getExtraContext || null;
+    clearContext();
     titleEl.textContent = opts.title || 'AI Chat';
     titleWrap.classList.add('aic-locked');
     showChatView();
@@ -1008,6 +1118,7 @@ function mountSidebar(win) {
       (chat.contextLabel ? ' about: ' + chat.contextLabel : '') +
       '. Use the prior messages as context.';
     state.getExtraContext = null;
+    clearContext();
     titleEl.textContent = chat.title || 'AI Chat';
     titleWrap.classList.remove('aic-locked');
     showChatView();
@@ -1102,10 +1213,108 @@ function mountSidebar(win) {
     ChatStore.upsert(chat);
   }
 
+  // ---------- Attached context (plus menu) ----------
+
+  function renderChips() {
+    chipsEl.innerHTML = '';
+    chipsEl.classList.toggle('aic-open', state.context.length > 0);
+    for (let entry of state.context) {
+      let chip = doc.createElement('div');
+      chip.className = 'aic-chip';
+      chip.title = entry.label;
+      let icon = makeIcon(doc, 'upload');
+      let label = doc.createElement('span');
+      label.className = 'aic-chip-label';
+      label.textContent = entry.label;
+      let close = doc.createElement('span');
+      close.className = 'aic-chip-x';
+      close.setAttribute('role', 'button');
+      close.setAttribute('tabindex', '0');
+      close.appendChild(makeIcon(doc, 'close'));
+      close.addEventListener('click', () => {
+        state.context = state.context.filter(e => e !== entry);
+        renderChips();
+      });
+      chip.appendChild(icon);
+      chip.appendChild(label);
+      chip.appendChild(close);
+      chipsEl.appendChild(chip);
+    }
+    autosizeTextarea();
+  }
+
+  // Entries carry a promise rather than resolved text: reading a file takes a
+  // moment and the chip should appear the instant it is picked. send() awaits
+  // them, so there is no race.
+  function addContext(entry) {
+    state.context.push(entry);
+    renderChips();
+  }
+
+  function clearContext() {
+    state.context = [];
+    renderChips();
+  }
+
+  async function resolveContext() {
+    let blocks = [];
+    for (let entry of state.context) {
+      try {
+        blocks.push(await entry.textPromise);
+      } catch (e) {
+        log('attached context "' + entry.label + '" failed: ' + e.message);
+      }
+    }
+    return blocks.join('\n\n---\n\n');
+  }
+
+  function togglePlusMenu(open) {
+    if (open === undefined) open = !plusMenu.classList.contains('aic-open');
+    plusMenu.classList.toggle('aic-open', open);
+  }
+
+  plusBtn.addEventListener('click', () => togglePlusMenu());
+  doc.addEventListener('mousedown', (e) => {
+    if (!plusMenu.contains(e.target) && !plusBtn.contains(e.target)) togglePlusMenu(false);
+  });
+  plusMenu.addEventListener('click', (e) => {
+    let item = e.target.closest('.aic-plus-item');
+    if (!item) return;
+    togglePlusMenu(false);
+    if (item.dataset.action === 'attach') pickFiles();
+  });
+
+  // nsIFilePicker.init() takes a BrowsingContext on the Gecko that Zotero 7
+  // is built on, but a DOM window on older builds -- try the modern shape
+  // first rather than pinning this to one Zotero version.
+  function pickFiles() {
+    let fp = Cc['@mozilla.org/filepicker;1'].createInstance(Ci.nsIFilePicker);
+    try {
+      fp.init(win.browsingContext, 'Attach files', Ci.nsIFilePicker.modeOpenMultiple);
+    } catch (e) {
+      fp.init(win, 'Attach files', Ci.nsIFilePicker.modeOpenMultiple);
+    }
+    fp.appendFilters(Ci.nsIFilePicker.filterAll);
+    fp.open((rv) => {
+      if (rv !== Ci.nsIFilePicker.returnOK) return;
+      let files = fp.files;
+      while (files.hasMoreElements()) {
+        let file = files.getNext().QueryInterface(Ci.nsIFile);
+        if (state.context.some(en => en.path === file.path)) continue;
+        addContext({
+          path: file.path,
+          label: file.leafName,
+          textPromise: buildFileContext(file.path, file.leafName),
+        });
+      }
+    });
+  }
+
   async function send(prefilled) {
     if (!state.chat) return;
     let text = (prefilled !== undefined ? prefilled : textarea.value).trim();
     if (!text) return;
+    togglePlusMenu(false);
     textarea.value = '';
     autosizeTextarea();
     appendMsg('user', text);
@@ -1119,8 +1328,11 @@ function mountSidebar(win) {
     if (needsTitle) generateTitle(state.chat, text);
     let placeholder = appendMsg('assistant', '\u2026');
     try {
+      let attached = await resolveContext();
       let extraContext = state.getExtraContext ? await state.getExtraContext(text) : '';
-      let system = state.system + (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
+      let system = state.system +
+        (attached ? `\n\nThe user attached the following for reference:\n${attached}` : '') +
+        (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
       let reply = await callAI(state.chat.messages, system);
       setMsgContent(placeholder, 'assistant', reply);
       state.chat.messages.push({ role: 'assistant', content: reply });

@@ -41,6 +41,11 @@ around it. Notable behaviour:
   code, and inline emphasis.
 - **Copy/paste** — right-click for a Cut/Copy/Paste menu; copying a
   message bubble yields the raw markdown, not the rendered text.
+- **The `+` button** below the composer opens a menu with *Attach
+  files* — pick files from your machine and their text is added to the
+  chat's context (text files only, capped at ~8k characters each).
+  Each one shows as a chip above the composer with an `×` to remove it,
+  and stays attached for the rest of that chat.
 - The composer grows with what you type, and long pasted messages
   collapse behind a fade so they don't swamp the transcript.
 - Follows Zotero's light/dark theme.
@@ -89,6 +94,9 @@ migrated once on startup, so an existing key and chat history carry over.
 - **Library search is keyword-only**, not semantic — it uses Zotero's
   quick-search, so phrasing needs to roughly match your library's
   titles/abstracts.
+- **Attached files must be text.** Everything is sent as plain text
+  messages, so PDFs, images, and other binaries can't be attached from
+  disk.
 - **Chat history is stored in a Zotero pref** as a single JSON blob
   (bootstrap plugins get no bundled DB), which is why it's capped at 50
   chats.
