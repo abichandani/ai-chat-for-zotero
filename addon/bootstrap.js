@@ -177,7 +177,10 @@ async function searchLibrary(query, limit = 6) {
 // "Add context". Titles are what a user actually recognises, so the typed
 // query is matched with Zotero's own quick search over title/creator/year.
 
-const MENTION_LIMIT = 5;
+// The popup's own CSS caps the visible window to 5 rows and scrolls past
+// that, so this only needs to bound how many rows exist to scroll through --
+// matching the search's own internal 50-result cap below is enough.
+const MENTION_LIMIT = 50;
 const MAX_CONTEXT_ITEM_CHARS = 8000;
 const MAX_CONTEXT_FILE_CHARS = 8000;
 
@@ -1551,6 +1554,17 @@ function mountSidebar(win) {
       suggestEl.appendChild(row);
     });
     suggestEl.classList.add('aic-open');
+    // Now that the list can hold more rows than the popup's fixed-height
+    // window shows, arrow-key navigation has to drag the active row back
+    // into view itself -- CSS overflow alone won't follow the selection.
+    let active = suggestEl.children[suggest.active];
+    if (active) {
+      if (active.offsetTop < suggestEl.scrollTop) {
+        suggestEl.scrollTop = active.offsetTop;
+      } else if (active.offsetTop + active.offsetHeight > suggestEl.scrollTop + suggestEl.clientHeight) {
+        suggestEl.scrollTop = active.offsetTop + active.offsetHeight - suggestEl.clientHeight;
+      }
+    }
   }
 
   // A row shown in place of results. Without it, "no matches", "Zotero threw"
