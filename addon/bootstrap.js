@@ -159,7 +159,9 @@ async function buildReaderSystemPrompt(reader) {
 // just Zotero's own quick-search fields.
 async function searchLibrary(query, limit = 6) {
   let s = new Zotero.Search();
-  s.libraryID = Zotero.Libraries.userLibraryID;
+  // libraryID is deliberately left unset: Zotero.Search scopes to one library
+  // when it is set, which hides group libraries entirely -- and a group can
+  // hold the whole collection.
   s.addCondition('quicksearch-titleCreatorYear', 'contains', query);
   let ids = await s.search();
   let items = await Zotero.Items.getAsync(ids.slice(0, limit));
@@ -170,11 +172,98 @@ async function searchLibrary(query, limit = 6) {
   }).join('\n');
 }
 
-// ---------- Attached files ----------
+// ---------- "@" mention context ----------
+// Items offered by the "@" suggestion popup and by the plus menu's
+// "Add context". Titles are what a user actually recognises, so the typed
+// query is matched with Zotero's own quick search over title/creator/year.
+
+const MENTION_LIMIT = 5;
+const MAX_CONTEXT_ITEM_CHARS = 8000;
+const MAX_CONTEXT_FILE_CHARS = 8000;
+
+function mentionLabel(item) {
+  let title = item.getField('title') || '(untitled)';
+  let creator = item.getField('firstCreator') || '';
+  let year = (item.getField('date') || '').match(/\d{4}/);
+  let meta = [creator, year ? year[0] : ''].filter(Boolean).join(', ');
+  return { title, meta };
+}
+
+async function searchMentionItems(query, limit = MENTION_LIMIT) {
+  let s = new Zotero.Search();
+  // Unscoped on purpose -- see searchLibrary(). Personal and group libraries
+  // are both offered, which is why a mention has to record which one it came
+  // from and not just the item key.
+  if (query) {
+    s.addCondition('quicksearch-titleCreatorYear', 'contains', query);
+  } else {
+    // Nothing typed after the "@" yet, so offer the newest items rather than
+    // an empty list. A search needs at least one condition, and this one is
+    // simply "everything that isn't a file attachment".
+    s.addCondition('itemType', 'isNot', 'attachment');
+  }
+  let ids = await s.search();
+  // Results come back unranked in item-id order, and ids climb with insertion,
+  // so the tail of that is the most recently added.
+  ids = query ? ids.slice(0, 50) : ids.slice(-50);
+  let items = (await Zotero.Items.getAsync(ids)).filter(it => it.isRegularItem());
+  if (!query) items.sort((a, b) => (a.dateAdded < b.dateAdded ? 1 : -1));
+  log('mention search "' + query + '": ' + ids.length + ' hits, ' + items.length + ' usable');
+  return items.slice(0, limit);
+}
+
+// A chosen mention is written into the composer as
+// "@[Title](library:2,key:ABCD2345)". The key is the item's own 8-character
+// key, stable across syncs -- unlike itemID, a local rowid that differs
+// between machines. Item keys are only unique within a library, so the
+// library id rides along; without it a group item cannot be found again.
+// The library part is optional when reading, for tokens written before it
+// was recorded.
+const MENTION_TOKEN = /@\[([^\]]*)\]\((?:library:(\d+),)?key:([A-Z0-9]+)\)/g;
+
+// Titles are free text, so anything that would close the token early is
+// dropped from the label. Only the library and key are load-bearing.
+function mentionToken(item) {
+  return '@[' + (item.getField('title') || '(untitled)').replace(/[[\]()]/g, '') +
+    '](library:' + item.libraryID + ',key:' + item.key + ')';
+}
+
+function stripMentionKeys(text) {
+  return text.replace(MENTION_TOKEN, '@$1');
+}
+
+function mentionedRefs(text) {
+  return Array.from(text.matchAll(MENTION_TOKEN), m => ({
+    libraryID: m[2] ? parseInt(m[2], 10) : Zotero.Libraries.userLibraryID,
+    key: m[3],
+  }));
+}
+
+// Flattens one library item into the text handed to the model: metadata plus
+// the indexed full text of its best attachment, same as the reader prompt.
+async function buildItemContext(item) {
+  let { title } = mentionLabel(item);
+  let parts = ['Title: ' + title];
+  for (let [label, field] of [['Authors', 'firstCreator'], ['Date', 'date'], ['Abstract', 'abstractNote']]) {
+    let val = item.getField(field);
+    if (val) parts.push(label + ': ' + val);
+  }
+  let text = '';
+  try {
+    let att = await item.getBestAttachment();
+    if (att) text = (await att.attachmentText) || '';
+  } catch (e) {
+    log('buildItemContext: attachment text failed for "' + title + '": ' + e.message);
+  }
+  if (text.length > MAX_CONTEXT_ITEM_CHARS) {
+    text = text.slice(0, MAX_CONTEXT_ITEM_CHARS) + '\n[...truncated...]';
+  }
+  if (text) parts.push('Full text (may be truncated):\n' + text);
+  return parts.join('\n');
+}
+
 // Only text can be attached: the chat API here takes plain-text messages, so
 // a PDF or image is reported as unreadable rather than pasted in as mojibake.
-
-const MAX_CONTEXT_FILE_CHARS = 8000;
 async function buildFileContext(path, name) {
   let text;
   try {
@@ -369,7 +458,11 @@ const DEFAULT_SIDEBAR_WIDTH = 340;
 const sidebarApis = new WeakMap(); // main window -> sidebar API, one per window
 
 function injectSidebarStyle(doc) {
-  if (doc.getElementById('ai-chat-sidebar-style')) return;
+  // Replace rather than skip: on a hot reload the previous build's <style> can
+  // still be in the document, and keeping it would silently pin the sidebar to
+  // the old stylesheet -- new rules would never apply.
+  let stale = doc.getElementById('ai-chat-sidebar-style');
+  if (stale) stale.remove();
   let style = doc.createElement('style');
   style.id = 'ai-chat-sidebar-style';
   style.textContent = `
@@ -574,6 +667,29 @@ function injectSidebarStyle(doc) {
     }
     #ai-chat-sidebar .aic-plus-item:hover { background: var(--aic-bg-hover); }
     #ai-chat-sidebar .aic-plus-item svg { width: 16px; height: 16px; flex-shrink: 0; color: var(--aic-text-muted); }
+    #ai-chat-sidebar .aic-suggest {
+      position: absolute; left: 8px; right: 8px; bottom: 100%; margin-bottom: 4px;
+      display: none; z-index: 3; background: var(--aic-bg);
+      border: 1px solid var(--aic-menu-border); border-radius: 8px;
+      box-shadow: 0 4px 14px var(--aic-menu-shadow); padding: 4px 0;
+      /* five 28px rows plus the 4px padding -- anything beyond that scrolls */
+      max-height: 148px; overflow-y: auto;
+    }
+    #ai-chat-sidebar .aic-suggest.aic-open { display: block; }
+    #ai-chat-sidebar .aic-suggest-item {
+      display: flex; align-items: center; gap: 8px; height: 28px; box-sizing: border-box;
+      padding: 0 10px; cursor: pointer; color: var(--aic-text);
+    }
+    #ai-chat-sidebar .aic-suggest-item svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--aic-text-faint); }
+    #ai-chat-sidebar .aic-suggest-item.aic-active { background: var(--aic-bg-hover); font-weight: 600; }
+    #ai-chat-sidebar .aic-suggest-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ai-chat-sidebar .aic-suggest-empty {
+      padding: 6px 10px; color: var(--aic-text-faint); font-size: 11.5px;
+    }
+    #ai-chat-sidebar .aic-suggest-meta {
+      flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      color: var(--aic-text-faint); font-weight: 400; font-size: 11.5px;
+    }
     #ai-chat-sidebar .aic-chips {
       display: none; flex-wrap: wrap; gap: 4px; padding: 7px 8px;
       border-bottom: 1px solid var(--aic-border-input);
@@ -643,9 +759,9 @@ function applyHeaderHeight(doc) {
   if (sidebar) sidebar.style.setProperty('--aic-header-height', readerToolbarHeight + 'px');
 }
 
-// Plus button, its menu entry and the attachment chips, all stroked in
-// currentColor so they follow the sidebar's light/dark palette. Sizing is
-// left to CSS.
+// Plus button, its two menu entries, the chips and the suggestion rows, all
+// stroked in currentColor so they follow the sidebar's light/dark palette.
+// Sizing is left to CSS.
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const SVG_ATTRS = {
   viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor',
@@ -655,6 +771,7 @@ const SVG_ATTRS = {
 const ICON_PATHS = {
   plus: ['M8 3v10M3 8h10'],
   upload: ['M8 10.5V2.6M5 5.6 8 2.6l3 3', 'M2.5 10.8v1.7a1 1 0 0 0 1 1h9a1 1 0 0 0 1-1v-1.7'],
+  doc: ['M9.3 2H4.6a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h6.8a1 1 0 0 0 1-1V5.2z', 'M9.3 2v3.2h3.1'],
   close: ['M4.5 4.5l7 7M11.5 4.5l-7 7'],
 };
 
@@ -667,8 +784,8 @@ function iconMarkup(name) {
     ICON_PATHS[name].map(d => '<path d="' + d + '"/>').join('') + '</svg>';
 }
 
-// For icons built in script (the chips), where the same namespace rule means
-// createElement('svg') would silently produce nothing visible.
+// For icons built in script (chips, suggestion rows), where the same namespace
+// rule means createElement('svg') would silently produce nothing visible.
 function makeIcon(doc, name) {
   let svg = doc.createElementNS(SVG_NS, 'svg');
   for (let [k, v] of Object.entries(SVG_ATTRS)) svg.setAttribute(k, v);
@@ -728,14 +845,16 @@ function mountSidebar(win) {
     <div class="aic-messages"></div>
     <div class="aic-history-list" style="display:none"></div>
     <div class="aic-input-area">
+      <div class="aic-suggest"></div>
       <div class="aic-plus-menu">
         <div class="aic-plus-item" data-action="attach">${iconMarkup('upload')}<span>Attach files</span></div>
+        <div class="aic-plus-item" data-action="context">${iconMarkup('doc')}<span>Add context</span></div>
       </div>
       <div class="aic-input-row">
         <div class="aic-chips"></div>
         <textarea placeholder="Ask anything\u2026"></textarea>
         <div class="aic-input-actions">
-          <div class="aic-plus" tabindex="0" role="button" title="Attach files">${iconMarkup('plus')}</div>
+          <div class="aic-plus" tabindex="0" role="button" title="Attach files or add context">${iconMarkup('plus')}</div>
           <div class="aic-send" tabindex="0" role="button">Send</div>
         </div>
       </div>
@@ -770,10 +889,12 @@ function mountSidebar(win) {
   let inputArea = sidebar.querySelector('.aic-input-area');
   let plusBtn = sidebar.querySelector('.aic-plus');
   let plusMenu = sidebar.querySelector('.aic-plus-menu');
+  let suggestEl = sidebar.querySelector('.aic-suggest');
   let chipsEl = sidebar.querySelector('.aic-chips');
 
   // state.context is what the plus menu has attached to the current chat:
   // { path, label, textPromise } entries, resolved to prompt text on send.
+  // Mentioned library items are NOT here -- those live in the message text.
   let state = { chat: null, system: '', getExtraContext: null, context: [] };
 
   // Pushes the rest of Zotero's UI over by setting a margin on #browser
@@ -970,8 +1091,15 @@ function mountSidebar(win) {
   function renderMessages() {
     messagesEl.innerHTML = '';
     for (let m of state.chat.messages) {
-      appendMsg(m.role, m.content);
+      appendMsg(m.role, displayText(m));
     }
+  }
+
+  // Stored messages keep their "@[Title](key:...)" tokens so the conversation
+  // stays the record of what it references, but the key is plumbing: neither
+  // the reader nor the model ever sees it.
+  function displayText(m) {
+    return m.role === 'user' ? stripMentionKeys(m.content) : m.content;
   }
 
   function appendMsg(role, text) {
@@ -1094,6 +1222,8 @@ function mountSidebar(win) {
     state.system = opts.system || '';
     state.getExtraContext = opts.getExtraContext || null;
     clearContext();
+    mentionCache.clear();
+    hideSuggestions();
     titleEl.textContent = opts.title || 'AI Chat';
     titleWrap.classList.add('aic-locked');
     showChatView();
@@ -1119,6 +1249,8 @@ function mountSidebar(win) {
       '. Use the prior messages as context.';
     state.getExtraContext = null;
     clearContext();
+    mentionCache.clear();
+    hideSuggestions();
     titleEl.textContent = chat.title || 'AI Chat';
     titleWrap.classList.remove('aic-locked');
     showChatView();
@@ -1268,6 +1400,40 @@ function mountSidebar(win) {
     return blocks.join('\n\n---\n\n');
   }
 
+  // Every paper mentioned anywhere in the conversation, so a follow-up
+  // question still has the text of a paper named several turns ago. Resolved
+  // text is cached per key -- pulling a PDF's index is slow to repeat.
+  const mentionCache = new Map();
+
+  async function resolveMentions(pending) {
+    let refs = [];
+    for (let m of state.chat.messages) {
+      if (m.role === 'user') refs.push(...mentionedRefs(m.content));
+    }
+    refs.push(...mentionedRefs(pending));
+    let blocks = [];
+    let seen = new Set();
+    for (let ref of refs) {
+      let id = ref.libraryID + '/' + ref.key;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (!mentionCache.has(id)) {
+        let item = Zotero.Items.getByLibraryAndKey(ref.libraryID, ref.key);
+        if (!item) {
+          log('mentioned item ' + id + ' is no longer in the library');
+          continue;
+        }
+        mentionCache.set(id, buildItemContext(item));
+      }
+      try {
+        blocks.push(await mentionCache.get(id));
+      } catch (e) {
+        log('mentioned item ' + id + ' failed to resolve: ' + e.message);
+      }
+    }
+    return blocks.join('\n\n---\n\n');
+  }
+
   function togglePlusMenu(open) {
     if (open === undefined) open = !plusMenu.classList.contains('aic-open');
     plusMenu.classList.toggle('aic-open', open);
@@ -1282,6 +1448,7 @@ function mountSidebar(win) {
     if (!item) return;
     togglePlusMenu(false);
     if (item.dataset.action === 'attach') pickFiles();
+    else insertMentionTrigger();
   });
 
   // nsIFilePicker.init() takes a BrowsingContext on the Gecko that Zotero 7
@@ -1310,30 +1477,168 @@ function mountSidebar(win) {
     });
   }
 
+  // ---------- "@" suggestions ----------
+
+  // "Add context" is only a menu-driven entry point into the same "@" flow
+  // that can be typed by hand.
+  function insertMentionTrigger() {
+    textarea.focus();
+    let pos = textarea.selectionStart;
+    let before = textarea.value.slice(0, pos);
+    // Keep the "@ follows a space or the start of the input" rule the typed
+    // shortcut relies on, so the popup opens either way.
+    let insert = (before === '' || /\s$/.test(before)) ? '@' : ' @';
+    textarea.value = before + insert + textarea.value.slice(pos);
+    textarea.selectionStart = textarea.selectionEnd = pos + insert.length;
+    autosizeTextarea();
+    updateSuggestions();
+  }
+
+  // The mention being typed at the caret, or null if the caret isn't in one.
+  // A mention starts at an "@" that itself follows the start of the input or
+  // whitespace, and runs to the caret. Spaces are allowed inside it so a
+  // multi-word title can be typed out; the length cap keeps an ordinary
+  // sentence that happens to contain an "@" from searching forever.
+  const MENTION_MAX_QUERY = 60;
+  function mentionAtCaret() {
+    let pos = textarea.selectionStart;
+    if (pos !== textarea.selectionEnd) return null;
+    let before = textarea.value.slice(0, pos);
+    let at = before.lastIndexOf('@');
+    if (at < 0) return null;
+    if (at > 0 && !/\s/.test(before[at - 1])) return null;
+    let query = before.slice(at + 1);
+    if (query.length > MENTION_MAX_QUERY || query.includes('\n')) return null;
+    // A completed "@[Title](key:...)" token is a finished reference, not a query
+    // still being typed, so writing on past it must not reopen the list.
+    if (query.startsWith('[')) return null;
+    return { start: at, query };
+  }
+
+  let suggest = { items: [], active: 0, mention: null, seq: 0 };
+
+  function hideSuggestions() {
+    suggest.items = [];
+    suggest.mention = null;
+    suggestEl.innerHTML = '';
+    suggestEl.classList.remove('aic-open');
+  }
+
+  function renderSuggestions() {
+    suggestEl.innerHTML = '';
+    suggest.items.forEach((item, idx) => {
+      let { title, meta } = mentionLabel(item);
+      let row = doc.createElement('div');
+      row.className = 'aic-suggest-item' + (idx === suggest.active ? ' aic-active' : '');
+      let icon = makeIcon(doc, 'doc');
+      let titleSpan = doc.createElement('span');
+      titleSpan.className = 'aic-suggest-title';
+      titleSpan.textContent = title;
+      row.appendChild(icon);
+      row.appendChild(titleSpan);
+      if (meta) {
+        let metaSpan = doc.createElement('span');
+        metaSpan.className = 'aic-suggest-meta';
+        metaSpan.textContent = meta;
+        row.appendChild(metaSpan);
+      }
+      // mousedown, not click: the default would blur the textarea first and
+      // the blur handler would close the list out from under the click.
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        chooseSuggestion(idx);
+      });
+      suggestEl.appendChild(row);
+    });
+    suggestEl.classList.add('aic-open');
+  }
+
+  // A row shown in place of results. Without it, "no matches", "Zotero threw"
+  // and "the popup cannot render at all" are indistinguishable from the
+  // outside -- they all look like a list that never appears.
+  function showSuggestMessage(text) {
+    suggest.items = [];
+    suggest.mention = null;
+    suggestEl.innerHTML = '';
+    let row = doc.createElement('div');
+    row.className = 'aic-suggest-empty';
+    row.textContent = text;
+    suggestEl.appendChild(row);
+    suggestEl.classList.add('aic-open');
+  }
+
+  async function updateSuggestions() {
+    let mention = mentionAtCaret();
+    if (!mention) {
+      hideSuggestions();
+      return;
+    }
+    let seq = ++suggest.seq;
+    let query = mention.query.trim();
+    log('mention lookup for "' + query + '"');
+    // Everything from here on runs off an await, where a throw would otherwise
+    // be an unhandled rejection and the list would just never appear.
+    try {
+      let items = await searchMentionItems(query);
+      if (seq !== suggest.seq) return; // a later keystroke already took over
+      if (!items.length) {
+        showSuggestMessage(query ? 'No items match "' + query + '"' : 'No items found');
+        return;
+      }
+      suggest.items = items;
+      suggest.mention = mention;
+      suggest.active = 0;
+      renderSuggestions();
+    } catch (e) {
+      log('mention suggestions failed: ' + e + ' / ' + (e && e.stack));
+      showSuggestMessage('Search failed: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  function chooseSuggestion(idx) {
+    let item = suggest.items[idx];
+    let mention = suggest.mention;
+    if (!item || !mention) return;
+    // The token IS the attachment: nothing is recorded anywhere else, so
+    // deleting it from the composer detaches the paper.
+    let replacement = mentionToken(item) + ' ';
+    let caret = textarea.selectionStart;
+    textarea.value = textarea.value.slice(0, mention.start) + replacement + textarea.value.slice(caret);
+    textarea.selectionStart = textarea.selectionEnd = mention.start + replacement.length;
+    hideSuggestions();
+    autosizeTextarea();
+    textarea.focus();
+  }
+
   async function send(prefilled) {
     if (!state.chat) return;
     let text = (prefilled !== undefined ? prefilled : textarea.value).trim();
     if (!text) return;
+    hideSuggestions();
     togglePlusMenu(false);
     textarea.value = '';
     autosizeTextarea();
-    appendMsg('user', text);
+    let shown = stripMentionKeys(text);
+    appendMsg('user', shown);
     state.chat.messages.push({ role: 'user', content: text });
     let needsTitle = !state.chat.title;
     if (needsTitle) {
-      state.chat.title = text.length > 40 ? text.slice(0, 40) + '\u2026' : text;
+      state.chat.title = shown.length > 40 ? shown.slice(0, 40) + '\u2026' : shown;
       titleEl.textContent = state.chat.title;
     }
     persist();
-    if (needsTitle) generateTitle(state.chat, text);
+    if (needsTitle) generateTitle(state.chat, shown);
     let placeholder = appendMsg('assistant', '\u2026');
     try {
       let attached = await resolveContext();
-      let extraContext = state.getExtraContext ? await state.getExtraContext(text) : '';
+      let mentioned = await resolveMentions(text);
+      let extraContext = state.getExtraContext ? await state.getExtraContext(shown) : '';
       let system = state.system +
         (attached ? `\n\nThe user attached the following for reference:\n${attached}` : '') +
+        (mentioned ? `\n\nThe user referenced these library items with "@":\n${mentioned}` : '') +
         (extraContext ? `\n\nRelevant context:\n${extraContext}` : '');
-      let reply = await callAI(state.chat.messages, system);
+      let reply = await callAI(
+        state.chat.messages.map(m => ({ role: m.role, content: displayText(m) })), system);
       setMsgContent(placeholder, 'assistant', reply);
       state.chat.messages.push({ role: 'assistant', content: reply });
       persist();
@@ -1353,8 +1658,31 @@ function mountSidebar(win) {
   }
 
   sendBtn.addEventListener('click', () => send());
-  textarea.addEventListener('input', autosizeTextarea);
+  textarea.addEventListener('input', () => {
+    autosizeTextarea();
+    updateSuggestions();
+  });
+  textarea.addEventListener('blur', () => hideSuggestions());
   textarea.addEventListener('keydown', (e) => {
+    if (suggestEl.classList.contains('aic-open') && e.key === 'Escape') {
+      e.preventDefault();
+      hideSuggestions();
+      return;
+    }
+    if (suggest.items.length) {
+      let n = suggest.items.length;
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        suggest.active = (suggest.active + (e.key === 'ArrowDown' ? 1 : n - 1)) % n;
+        renderSuggestions();
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        chooseSuggestion(suggest.active);
+        return;
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       send();

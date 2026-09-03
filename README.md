@@ -41,11 +41,27 @@ around it. Notable behaviour:
   code, and inline emphasis.
 - **Copy/paste** — right-click for a Cut/Copy/Paste menu; copying a
   message bubble yields the raw markdown, not the rendered text.
-- **The `+` button** below the composer opens a menu with *Attach
-  files* — pick files from your machine and their text is added to the
-  chat's context (text files only, capped at ~8k characters each).
-  Each one shows as a chip above the composer with an `×` to remove it,
-  and stays attached for the rest of that chat.
+- **The `+` button** below the composer attaches things to the chat:
+  - *Attach files* — pick files from your machine; their text is added
+    to the chat's context (text files only, capped at ~8k characters
+    each — a PDF or image is reported as unreadable rather than pasted
+    in as gibberish).
+  - *Add context* — reference a paper in your library. It types an `@`
+    for you and opens a suggestion list of up to five matching items
+    directly above the composer, each row showing the title with its
+    first author and year alongside. Typing `@` yourself does the same
+    and keeps filtering as you type; `↑`/`↓` move, `Enter`/`Tab` pick,
+    `Esc` closes.
+  - A picked paper becomes an `@[Title](key:ABCD2345)` token in the
+    composer. **The text is the reference** — delete it and the paper is
+    no longer attached; there is no second place to tidy up. That `key`
+    is Zotero's own item key, which survives syncing (unlike the local
+    item id), and it is stripped back out before the message is shown or
+    sent. The paper's metadata, abstract, and indexed full text (~8k
+    characters) go to the model, and anything mentioned earlier in a
+    conversation stays available to later questions.
+  - Attached files show as a chip above the composer with an `×` to
+    remove, and stay attached for the rest of that chat.
 - The composer grows with what you type, and long pasted messages
   collapse behind a fade so they don't swamp the transcript.
 - Follows Zotero's light/dark theme.
@@ -92,11 +108,21 @@ migrated once on startup, so an existing key and chat history carry over.
   title/abstract-only and tells you so (try Zotero's right-click →
   "Reindex Item" if that happens on a PDF that should have a text layer).
 - **Library search is keyword-only**, not semantic — it uses Zotero's
-  quick-search, so phrasing needs to roughly match your library's
-  titles/abstracts.
+  quick-search, so this applies to the `@` suggestion list too: phrasing
+  needs to roughly match your library's titles/creators/years. Both search
+  every library you have, personal and group alike; a mention records
+  which library its item came from, since item keys are only unique
+  within one.
 - **Attached files must be text.** Everything is sent as plain text
   messages, so PDFs, images, and other binaries can't be attached from
-  disk.
+  disk — but a PDF that's *in your library* can be added with `@`, which
+  goes through Zotero's own text index.
+- **There is no such thing as a file path for a Zotero item**, which is
+  why `@` matches on title/creator/year rather than completing a path.
+  Imported files do live on disk, under
+  `<data directory>/storage/<8-char key>/`, but that key is generated
+  and never shown to you; collections are database rows, not folders,
+  and an item can sit in several of them or in none.
 - **Chat history is stored in a Zotero pref** as a single JSON blob
   (bootstrap plugins get no bundled DB), which is why it's capped at 50
   chats.
